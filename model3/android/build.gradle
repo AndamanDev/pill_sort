@@ -1,0 +1,10 @@
+// Versions match the sibling project (pill-counter-lite/android), which builds on this
+// machine already -- the Gradle cache here is warm for exactly this set, and a version
+// bump is a separate problem from getting pillsort onto a phone.
+plugins {
+    id 'com.android.application' version '8.4.2' apply false
+    id 'org.jetbrains.kotlin.android' version '1.9.24' apply false
+    // Puts CPython, numpy and OpenCV inside the APK, so pillsort/ and ui/ run on the
+    // phone as the files they already are rather than as a Kotlin translation of them.
+    id 'com.chaquo.python' version '17.0.0' apply false
+}

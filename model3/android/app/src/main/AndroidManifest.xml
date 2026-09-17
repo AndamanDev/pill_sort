@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- required="false" so the APK still installs on a device without one. It will say
+         so on screen rather than refusing to install at all. -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="false"
+        android:theme="@style/AppTheme">
+
+        <!-- Landscape, and it stays landscape: a tray is wider than it is deep,
+             so the picture of it is too, and model3/phone/screen.py lays itself
+             out with the controls in a column beside the camera, which is
+             the bench window's arrangement. Upright, that canvas would
+             letterbox
+             into a strip across the middle of the screen. configChanges keeps the
+             activity alive through the rotation that happens anyway, so Chaquopy
+             is not restarted and numpy is not re-imported for a turn of the
+             wrist.
+
+             sensorLandscape rather than landscape: the phone follows the hand that
+             holds it, so picking it up the other way round no longer shows the screen
+             upside down. What it will not do is fall into portrait, where a 4:3 picture
+             of a tray can only have a third of the screen and the count has to go
+             underneath it — the arrangement this app was moved OFF for exactly that
+             reason. -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

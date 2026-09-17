@@ -1,0 +1,398 @@
+[
+ {
+  "per": 68.02083333333333,
+  "imgs": 864,
+  "boxes": 58770,
+  "slug": "tes-4ynfo/capsule-mifje",
+  "lic": "CC BY 4.0",
+  "classes": [
+   "putih",
+   "biru"
+  ],
+  "icon": "https://source.roboflow.com/436NdYcSmDSvP1WZhIpe14yCFXZ2/dcvvvjJ4msprKqNN89Mi/original.jpg"
+ },
+ {
+  "per": 67.44444444444444,
+  "imgs": 90,
+  "boxes": 6070,
+  "slug": "testslip/pill-tray-count",
+  "lic": "CC BY 4.0",
+  "classes": [
+   "foreign",
+   "pill_good",
+   "pill_broken"
+  ],
+  "icon": "https://source.roboflow.com/Rrj0pQ4ahpQ22B9XNQWVO5a1RIh1/d3fhgV3xdHC3JPZ2JiCY/original.jpg"
+ },
+ {
+  "per": 58.82658959537572,
+  "imgs": 346,
+  "boxes": 20354,
+  "slug": "apisits-workspace-mffve/detection-medicine-capsule",
+  "lic": "CC BY 4.0",
+  "classes": [
+   "capsule",
+   "detection-medicine-capsule"
+  ],
+  "icon": "https://source.roboflow.com/0QqgbFcrxZahoPtzRnGjgIv3ULf2/zBGsqzcw3ZlBpoU8KdV3/original.jpg"
+ },
+ {
+  "per": 30.591922845087403,
+  "imgs": 1659,
+  "boxes": 50752,
+  "slug": "kasetsart-university-rpmpb/pills-pills",
+  "lic": "CC BY 4.0",
+  "classes": [
+   "Tablet",
+   "Capsule"
+  ],
+  "icon": "https://source.roboflow.com/oisMBHcLiPPMAPv5558q2ZyMkhE2/ftfJHTu12AQyzql2JKPq/original.jpg"
+ },
+ {
+  "per": 23.1353001017294,
+  "imgs": 2949,
+  "boxes": 68226,
+  "slug": "naotos-workspace-2f041/pill-counter-qmvgi",
+  "lic": "CC BY 4.0",
+  "classes": [
+   "1",
+   "tablet",
+   "pill"
+  ],
+  "icon": "https://source.roboflow.com/YwOR1DpgycMOAWWRFd3V5VQfOSD3/zwx3tNFNFcNs6EpCZgTH/original.jpg"
+ },
+ {
+  "per": 18.59375,
+  "imgs": 224,
+  "boxes": 4165,
+  "slug": "hardee/capsules-mywnz",
+  "lic": "CC BY 4.0",
+  "classes": [
+   "capsule"
+  ],
+  "icon": "https://source.roboflow.com/Hcc2fJv93xR0p9FATvfGSMRvwku1/9mSYOkKSVL8H4guBK3uV/original.jpg"
+ },
+ {
+  "per": 16.573170731707318,
+  "imgs": 82,
+  "boxes": 1359,
+  "slug": "ruben-bailey-jtm9e/pill-counter-zrwkq",
+  "lic": "CC BY 4.0",
+  "classes": [
+   "Aspirin",
+   "Vitamin"
+  ],
+  "icon": "https://source.roboflow.com/BecNLET0PZR9tbRMDeWXnXwv0413/spnp3BWGoPfGUtfMgyfa/original.jpg"
+ },
+ {
+  "per": 16.359375,
+  "imgs": 192,
+  "boxes": 3141,
+  "slug": "ru-rjfw5/pill-counter-zskvm",
+  "lic": "CC BY 4.0",
+  "classes": [
+   "Aspirin",
+   "Vitamin"
+  ],
+  "icon": "https://source.roboflow.com/06orQaQp2VZDlH2IGIWXg6i0sgk2/CJIPV0NVI8rMF5Eh8gNV/original.jpg"
+ },
+ {
+  "per": 15.675675675675675,
+  "imgs": 74,
+  "boxes": 1160,
+  "slug": "cxandpll-gmail-com/capsules-6ydcz",
+  "lic": "CC BY 4.0",
+  "classes": [
+   "Bubble",
+   "capsules"
+  ],
+  "icon": "https://source.roboflow.com/NoqnB63npfQNOe0Sl6OFVmgYnRS2/Jk5p5Ts1iSPtsrafuGx5/original.jpg"
+ },
+ {
+  "per": 15.07638888888889,
+  "imgs": 288,
+  "boxes": 4342,
+  "slug": "hannas-workspace-zgvp5/pills-ohwqa",
+  "lic": "CC BY 4.0",
+  "classes": [
+   "vitamin",
+   "magnesium",
+   "ashwagandha",
+   "kurkuma",
+   "biotin",
+   "compartment"
+  ],
+  "icon": "https://source.roboflow.com/h4C5ICAtgJNbznSUWAlrcU6y7TI3/NfAbc3tPhl8ohkQWwj8N/original.jpg"
+ },
+ {
+  "per": 12.602649006622517,
+  "imgs": 151,
+  "boxes": 1903,
+  "slug": "jetcounterdemo/capsules-h62sj",
+  "lic": "CC BY 4.0",
+  "classes": [
+   "pill"
+  ],
+  "icon": "https://source.roboflow.com/ZL5PeIX4rIX4RqgSsDSY5q95Vt32/dyxokjuk6XeOhCEixlvf/original.jpg"
+ },
+ {
+  "per": 11.94,
+  "imgs": 100,
+  "boxes": 1194,
+  "slug": "test-d6flj/capsule-7g7bb",
+  "lic": "CC BY 4.0",
+  "classes": [
+   "Left",
+   "Right"
+  ],
+  "icon": "https://source.roboflow.com/EiHtBItpwRVsLBQj49eOmnSwCer2/OfyVXfyyxFR3qcizfvnS/original.jpg"
+ },
+ {
+  "per": 10.076335877862595,
+  "imgs": 393,
+  "boxes": 3960,
+  "slug": "spider-man-bda4w/blue-pill",
+  "lic": "CC BY 4.0",
+  "classes": [
+   "0"
+  ],
+  "icon": "https://source.roboflow.com/BEJJIaPuN8azPXWUoVOdz4Yg37o1/CIaN4MtsTc4uF2AIzcd2/original.jpg"
+ },
+ {
+  "per": 10.047818791946309,
+  "imgs": 1192,
+  "boxes": 11977,
+  "slug": "test-u0krs/pill-counter-mk7y2",
+  "lic": "CC BY 4.0",
+  "classes": [
+   "1",
+   "2",
+   "3",
+   "4",
+   "5",
+   "6"
+  ],
+  "icon": "https://source.roboflow.com/8pbPW218bQb09QJMG3xXDJPxmcz1/0044EEhlfQYlEksAcWdX/original.jpg"
+ },
+ {
+  "per": 9.185714285714285,
+  "imgs": 70,
+  "boxes": 643,
+  "slug": "nicotine/medicine-u5lds",
+  "lic": "CC BY 4.0",
+  "classes": [
+   "orange pill",
+   "blue pill",
+   "white pill"
+  ],
+  "icon": "https://source.roboflow.com/MvMzNwwtuNYJNtGRwh9YzYLuGXX2/CCLdeT7GiB1jUVpIPBXv/original.jpg"
+ },
+ {
+  "per": 8.782857142857143,
+  "imgs": 350,
+  "boxes": 3074,
+  "slug": "purnesh-s-v-zlgjx/pill-counter-t8z2t",
+  "lic": "CC BY 4.0",
+  "classes": [
+   "Empty",
+   "Fill"
+  ],
+  "icon": "https://source.roboflow.com/RYUkdqW2KuSBqdecUx8dQVgIx5u2/xtjPVBC0SzJXUb4Jic5E/original.jpg"
+ },
+ {
+  "per": 8.2,
+  "imgs": 70,
+  "boxes": 574,
+  "slug": "leddetection-wzixy/capsules-4ihqv",
+  "lic": "Public Domain",
+  "classes": [
+   "chinese",
+   "iranian",
+   "italian"
+  ],
+  "icon": "https://source.roboflow.com/stIfa3H84DV6GoXtCQnRqXpBXHi1/nUJVZb8MRsIAM7mJLw3S/original.jpg"
+ },
+ {
+  "per": 4.793,
+  "imgs": 1000,
+  "boxes": 4793,
+  "slug": "andreas-rameladi-hpqto/capsule-mfpam",
+  "lic": "CC BY 4.0",
+  "classes": [
+   "capsule"
+  ],
+  "icon": "https://source.roboflow.com/xWLuIbWOo8OnF3ssdW2fqT51fMy2/dyfHv7wsWdhdTVDDktRw/original.jpg"
+ },
+ {
+  "per": 4.7530949105914715,
+  "imgs": 1454,
+  "boxes": 6911,
+  "slug": "sito-s02gz/pharmacy-bk2qv",
+  "lic": "CC BY 4.0",
+  "classes": [
+   "zedd_go",
+   "zano_thermometer",
+   "oview",
+   "surecheck_streamer",
+   "presto",
+   "quiko_strict"
+  ],
+  "icon": "https://source.roboflow.com/oawsMvEVhfezFyKdrMAQvaIetEu2/RbGiSBMrZ3kfHOWZJPaZ/original.jpg"
+ },
+ {
+  "per": 3.7713147410358565,
+  "imgs": 1255,
+  "boxes": 4733,
+  "slug": "belocum/pill-counter",
+  "lic": "Public Domain",
+  "classes": [
+   "1",
+   "2",
+   "3",
+   "4",
+   "5",
+   "6"
+  ],
+  "icon": "https://source.roboflow.com/8dyz3MIlTLMhpSd6FTCv3ChTcar2/01ZSf31kDJgbDUhTntNL/original.jpg"
+ },
+ {
+  "per": 3.52027027027027,
+  "imgs": 148,
+  "boxes": 521,
+  "slug": "nilays-workspace/pill-tray-detector-tfin3",
+  "lic": "CC BY 4.0",
+  "classes": [
+   "pills",
+   "pill"
+  ],
+  "icon": "https://source.roboflow.com/fSkwbNsBGMYbBl5HMiGe93tyO2t2/1xlLDqBxn9vtjcOMkHiQ/original.jpg"
+ },
+ {
+  "per": 2.8375634517766497,
+  "imgs": 591,
+  "boxes": 1677,
+  "slug": "anawats-workspace/capsule-jhstd",
+  "lic": "CC BY 4.0",
+  "classes": [
+   "Omeprazole_20_mg",
+   "Fluoxetine",
+   "celecoxib_200_mg",
+   "Dicloxilin",
+   "exelon"
+  ],
+  "icon": "https://source.roboflow.com/1FQJ8KU8FJYeVsQEKLaLvYZ2er13/3miODPqMhN7mtLZfY2pr/original.jpg"
+ },
+ {
+  "per": 2.1062681610626814,
+  "imgs": 2409,
+  "boxes": 5074,
+  "slug": "abhijeet-kibe-iyicg/capsule-detection",
+  "lic": "CC BY 4.0",
+  "classes": [
+   "Parachute",
+   "Capsule"
+  ],
+  "icon": "https://source.roboflow.com/5V3MZQgnTBhBi18z27NJuGq9DOi2/5nfzuzqFgbg9AtQBHoWV/original.jpg"
+ },
+ {
+  "per": 2.061460592913955,
+  "imgs": 1383,
+  "boxes": 2851,
+  "slug": "test-rnjn2/pills-tray-dataset",
+  "lic": "CC BY 4.0",
+  "classes": [
+   "chute",
+   "tray"
+  ],
+  "icon": "https://source.roboflow.com/wcgqPHALrpVVSh5hKP2F1djqpUJ3/hG0LqG0MTOM3JrenMtqg/original.jpg"
+ },
+ {
+  "per": 2.0253807106598987,
+  "imgs": 394,
+  "boxes": 798,
+  "slug": "rushabh-nq1iw/capsule-manjo",
+  "lic": "CC BY 4.0",
+  "classes": [
+   "Everything",
+   "Leak",
+   "Scratch",
+   "Misshape",
+   "Bubble",
+   "Disscolour"
+  ],
+  "icon": "https://source.roboflow.com/wlgdcES7OHS14WhBvIv75b5CqV52/Mtdz0zXvGpbf9DCLQCNj/original.jpg"
+ },
+ {
+  "per": 1.9875776397515528,
+  "imgs": 161,
+  "boxes": 320,
+  "slug": "project-eiv1k/drug-yst98",
+  "lic": "CC BY 4.0",
+  "classes": [
+   "Fenoterol_just",
+   "Bambuterol_opposite",
+   "Ambroxol_just",
+   "Montelukast_just",
+   "Ambroxol_opposite",
+   "Bambuterol_just"
+  ],
+  "icon": "https://source.roboflow.com/nMTipk38LLYK8y0ejWgGqcczFeg2/0yfCF1J7eU82V4iFA2Sp/original.jpg"
+ },
+ {
+  "per": 1.012932832707551,
+  "imgs": 2397,
+  "boxes": 2428,
+  "slug": "nikita-y7oyk/capsule-9rerg",
+  "lic": "CC BY 4.0",
+  "classes": [
+   "Capsule",
+   "capsule"
+  ],
+  "icon": "https://source.roboflow.com/8yMiwx8Zk6UHNR3GKESHQxRBsRK2/AYybZegC0yHAdMZVqPlT/original.jpg"
+ },
+ {
+  "per": 1.0025641025641026,
+  "imgs": 390,
+  "boxes": 391,
+  "slug": "deep-learn-research/blue-tray-stuzf",
+  "lic": "CC BY 4.0",
+  "classes": [
+   "background",
+   "filled",
+   "empty"
+  ],
+  "icon": "https://source.roboflow.com/rPWAOEAc0RgV16cVIO62MdLqRKH3/ZUxiT6ULlXMmGR7eppuK/original.jpg"
+ },
+ {
+  "per": 0.9993714644877436,
+  "imgs": 1591,
+  "boxes": 1590,
+  "slug": "object-detection-hhx5h/pharmacy-jl5t1",
+  "lic": "CC BY 4.0",
+  "classes": [
+   "1",
+   "2",
+   "3",
+   "4",
+   "5",
+   "6"
+  ],
+  "icon": "https://source.roboflow.com/4IV9aReu12YEoxiZdYSHRXvrhxT2/aDiCHpzreSbnNVmDfxev/original.jpg"
+ },
+ {
+  "per": 0.6941230911614993,
+  "imgs": 4322,
+  "boxes": 3000,
+  "slug": "capsule-oxm8l/capsule-kr5x8",
+  "lic": "Private",
+  "classes": [
+   "NOBODY",
+   "NOHEAD",
+   "CRACK",
+   "NORMAL",
+   "SQUEEZE",
+   "PIDAN"
+  ],
+  "icon": "https://source.roboflow.com/BxubzKLfS7XVOVWqPlTzSVxIQ2H2/9OfI4QHj6ClqtcclqACZ/original.jpg"
+ }
+]

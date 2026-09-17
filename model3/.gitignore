@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.venv-rf/
+
+# THE API KEY. Never commit this file -- it is the whole reason .gitignore exists here.
+.env
+
+# Annotated frames and raw responses from a run. Bench output, not source.
+out/
+
+# The downloaded Roboflow dataset. 12.8 MB of images -- data, not source. Re-downloadable
+# from https://universe.roboflow.com/testpills/pill-count/dataset/4 (CC BY 4.0).
+dataset/
+
+# ที่พักไฟล์ก่อนอัปขึ้น Colab -- สำเนาของไฟล์ที่มีอยู่แล้วที่อื่น
+upload/

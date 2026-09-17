@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The two the launcher icon needs. Everything on screen is coloured by ui/theme.py,
+     which cv2 draws in BGR; these are the same greens written the way Android wants. -->
+<resources>
+    <color name="brand_green">#108644</color>
+    <color name="icon_background">#ffffff</color>
+</resources>

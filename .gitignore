@@ -1,0 +1,36 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+.venv-*/
+*.egg-info/
+
+# ---- ความลับ ----
+# คีย์ Roboflow อยู่ใน model3/.env -- ห้ามขึ้น repo เด็ดขาด (.env.example ขึ้นได้)
+.env
+!.env.example
+
+# ---- ผลลัพธ์จากการ build ----
+build/
+dist/
+.gradle/
+local.properties
+*.apk
+*.aab
+
+# ---- ของหน้างาน ไม่ใช่ซอร์ส ----
+# กรอบนับผูกกับกล้องตัวนี้ที่ความสูงนี้ เอาไปเครื่องอื่นจะชี้ผิดที่
+settings/
+records/
+out/
+
+# ---- คลิป/ภาพดิบ ----
+*.mp4
+
+# ---- ระบบปฏิบัติการ ----
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# ตั้งค่า Claude Code เฉพาะเครื่องนี้
+.claude/settings.local.json

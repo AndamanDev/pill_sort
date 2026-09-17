@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The platform theme, not AppCompat or Material. This app has one activity carrying an
+     ImageView and a TextView, so a support library for widget styling would be ~1 MB of
+     APK for nothing. -->
+<resources>
+    <style name="AppTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#f4f7f4</item>
+        <item name="android:statusBarColor">@color/brand_green</item>
+        <!-- A phone with a notch letterboxes the window away from it unless told not to,
+             which on a landscape app is a black band down one side. -->
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+    </style>
+</resources>

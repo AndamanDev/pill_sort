@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Three layers. Bottom to top: the camera, the window drawn around it, and a message
+     that is only ever seen when something is wrong.
+
+     The camera used to be none of Android's business — ui/screen.py composed the whole
+     window, video card included, and it arrived as one bitmap. That kept one drawing
+     path for the bench and the phone, and it also chained the preview to the model: the
+     picture could only refresh as fast as a frame could be segmented, which measured
+     1.3 fps on the test handset and looked broken.
+
+     So the video alone is a real preview surface now, and ui/screen.py draws everything
+     else onto a transparent canvas over the top of it — the same compose(), one extra
+     argument. The camera runs at the display's rate; the dots and the count land on it
+     whenever the model has an answer. `preview` is positioned in code, not here, from
+     the pane rectangle screen.pane() reports, so the hole in the overlay and the
+     surface behind it cannot disagree. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#f4f7f4">
+
+    <!-- Laid out by MainActivity.placePreview(). The size here is a placeholder; what
+         matters is that it starts invisible, so it cannot flash at the wrong size and
+         in the wrong place for the frame or two before the canvas size is known. -->
+    <androidx.camera.view.PreviewView
+        android:id="@+id/preview"
+        android:layout_width="1dp"
+        android:layout_height="1dp"
+        android:visibility="invisible" />
+
+    <!-- fitCenter, not centerCrop: the tap handler undoes exactly this transform to get
+         back to canvas coordinates, and placePreview() undoes it to find the pane, so a
+         crop would move the buttons off-screen and the video out from under its hole. -->
+    <ImageView
+        android:id="@+id/canvas"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:contentDescription="@string/app_name"
+        android:scaleType="fitCenter" />
+
+    <!-- THE LOADING SCREEN, over everything until the first composed frame arrives.
+         Laid out to match app/splash.py, because it is the same program starting up and
+         an operator who uses both should not have to learn two of them: logo, the app's
+         name, a green bar, the percentage under it, and a line saying which step is
+         running. The bar is not decoration. Chaquopy unpacks CPython, numpy and OpenCV
+         on a new install and ONNX Runtime builds its session after that, which is
+         seconds of nothing; a bar that stops at 45% says the model is the slow part
+         instead of leaving somebody to guess whether the phone has hung. -->
+    <LinearLayout
+        android:id="@+id/loading"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:background="#ffffff">
+
+        <ImageView
+            android:id="@+id/loadingLogo"
+            android:layout_width="wrap_content"
+            android:layout_height="72dp"
+            android:adjustViewBounds="true"
+            android:contentDescription="@string/app_name" />
+
+        <TextView
+            android:id="@+id/loadingTitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="22dp"
+            android:text="ระบบนับเม็ดยา"
+            android:textColor="#17211c"
+            android:textSize="26sp"
+            android:textStyle="bold" />
+
+        <ProgressBar
+            android:id="@+id/loadingBar"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="320dp"
+            android:layout_height="12dp"
+            android:layout_marginTop="34dp"
+            android:max="100"
+            android:progress="0"
+            android:progressDrawable="@drawable/splash_bar" />
+
+        <TextView
+            android:id="@+id/loadingPct"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:text="0%"
+            android:textColor="#108644"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/loadingNote"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="30dp"
+            android:gravity="center"
+            android:paddingLeft="24dp"
+            android:paddingRight="24dp"
+            android:text="กำลังเริ่มระบบ"
+            android:textColor="#5b6b62"
+            android:textSize="16sp" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/status"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:gravity="center"
+        android:padding="24dp"
+        android:layout_marginTop="180dp"
+        android:textColor="#5b6b62"
+        android:textSize="24sp" />
+</FrameLayout>

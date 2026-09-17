@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A tablet and a capsule: the two shapes pillsort's grouping actually tells apart.
+
+     108x108 with the art kept inside the middle 72x72, which is the only part of an
+     adaptive icon guaranteed to survive whatever mask the launcher applies. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:fillColor="#108644"
+        android:pathData="M40,46 m-15,0 a15,15 0 1,0 30,0 a15,15 0 1,0 -30,0 Z" />
+
+    <group
+        android:pivotX="63"
+        android:pivotY="63"
+        android:rotation="-35">
+        <path
+            android:fillColor="#17a050"
+            android:pathData="M47,54 h32 a9,9 0 0 1 0,18 h-32 a9,9 0 0 1 0,-18 Z" />
+    </group>
+</vector>

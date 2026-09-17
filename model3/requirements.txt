@@ -1,0 +1,6 @@
+# The Roboflow SDK. 1.5.0 is the floor: api_key_transport="header" arrived there, and
+# without it the key goes up in the query string.
+inference-sdk>=1.5.0
+
+# For drawing the boxes and for pulling a frame out of the mp4s in model2/frames.
+opencv-python>=4.8

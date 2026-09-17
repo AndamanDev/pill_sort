@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The splash's progress bar, drawn to match app/splash.py: a pale track with a green
+     bar in it, both fully rounded. Android's default is a thin line in the platform's
+     accent colour, which on one handset is blue and on another is whatever the owner's
+     wallpaper made it: not a colour this app gets to choose, and not the one the PC
+     shows. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:id="@android:id/background">
+        <shape android:shape="rectangle">
+            <corners android:radius="6dp" />
+            <solid android:color="#dfe7e1" />
+        </shape>
+    </item>
+    <item android:id="@android:id/progress">
+        <clip>
+            <shape android:shape="rectangle">
+                <corners android:radius="6dp" />
+                <solid android:color="#108644" />
+            </shape>
+        </clip>
+    </item>
+</layer-list>
