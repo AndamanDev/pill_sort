@@ -118,7 +118,7 @@ def start(assets_dir: str, records_dir: str, ort,
     # _S["pane"] above raised UnboundLocalError before the camera ever opened -- and the
     # only place that showed was a phone, saying "เริ่มระบบไม่สำเร็จ".
     return json.dumps({"width": OUT_W, "height": OUT_H, "pane": pane_out(),
-                       "records": records_dir})
+                       "records": records_dir, "flip": bool(_S["screen"].flip)})
 
 
 class _Forward:
@@ -277,7 +277,15 @@ def touch(phase: str, x: int, y: int) -> str:
     # Whatever it did, the next frame is drawn: a tap that changed something too subtle
     # for state_key would otherwise leave the screen showing the state before it.
     _S["last_key"] = None
-    return json.dumps({"target": screen.target, "page": screen.page})
+    # `flip` IS HERE BECAUSE KOTLIN OWNS HALF OF IT. Everything else on this screen is
+    # drawn by Python and needs no reply at all -- but the video is CameraX's own preview
+    # surface showing through the hole in the canvas, and nothing on this side can turn it
+    # round. Python flips the frame it analyses, so the marks and the region stay on the
+    # tablets; MainActivity flips the surface, so the operator sees the same picture. Send
+    # only one of those and they disagree, with every mark landing on the mirror image of
+    # the tablet it belongs to -- which is worse than the mirrored picture it set out to fix.
+    return json.dumps({"target": screen.target, "page": screen.page,
+                       "flip": bool(screen.flip)})
 
 
 # --------------------------------------------------------------------------- helpers --
@@ -288,15 +296,26 @@ def _count_inside():
 
 
 def _save():
+    """Write the record, with the SAME arithmetic the screen did.
+
+    Not the live count on its own. Filing the tray while the screen showed a total would
+    put 25 in the record for a prescription of 60 -- wrong in the direction that reads as a
+    short dispense, and unfalsifiable afterwards because the other 35 are in a bottle. The
+    pours are read once, here, so what is written is what was on screen when it was tapped.
+    """
     from model3.phone import records as rec_store
 
     screen = _S["screen"]
+    live = 0 if screen.clearing else int(_S["count"])
+    rounds = list(screen.rounds) + ([live] if live or not screen.rounds else [])
+    total = screen.banked() + live
     stamp = rec_store.save(
         screen.records_dir, _S.get("frame"), _S["boxes"], _S["confs"],
-        _S["count"], screen.target, _S["ms"], screen.roi,
+        total, screen.target, _S["ms"], screen.roi,
         screen.conf, screen.iou, screen.imgsz,
-        write_jpeg=lambda path, img: _S["cv2"].imwrite(path, img))
-    screen.saved(_S["count"], stamp)
+        write_jpeg=lambda path, img: _S["cv2"].imwrite(path, img),
+        rounds=rounds, round_frames=list(screen.round_frames))
+    screen.saved(total, stamp)
 
 
 def _export():
@@ -350,4 +369,12 @@ def _to_bgr(rgba, width, height, row_stride, rotation, crop_l, crop_t, crop_r, c
         bgr = cv2.rotate(bgr, cv2.ROTATE_180)
     elif rotation == 270:
         bgr = cv2.rotate(bgr, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
+    # THE MIRROR IS NOT DONE HERE, and it was, for a while. Flipping the frame gives the
+    # detector a different image: measured on this bench it moved the count by as much as
+    # three on one tray, so a preference about which way round a picture LOOKS could change
+    # a number that goes in a record. It lives in two places instead, both of them at the
+    # glass -- screen.spot() mirrors the marks inside the video pane, MainActivity mirrors
+    # the preview surface underneath them, and screen._to_frame undoes it for every tap.
+    # The frame, the model, the region and the saved JPEG never learn the setting exists.
     return bgr

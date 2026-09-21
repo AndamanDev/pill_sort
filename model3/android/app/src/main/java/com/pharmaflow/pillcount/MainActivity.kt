@@ -113,6 +113,9 @@ class MainActivity : ComponentActivity() {
     private var analysisUseCase: ImageAnalysis? = null
     private var previewUseCase: Preview? = null
 
+    /** Is the picture being shown left-to-right reversed. Owned by Python; see applyMirror. */
+    private var mirrored = false
+
     /**
      * TURNING THE PHONE END FOR END DOES NOT CHANGE ITS CONFIGURATION, and that is the
      * whole reason this listener exists.
@@ -330,12 +333,14 @@ class MainActivity : ComponentActivity() {
             pane = IntArray(paneJson.length()) { paneJson.getInt(it) }
             bitmaps = Array(2) { Bitmap.createBitmap(canvasW, canvasH, Bitmap.Config.ARGB_8888) }
             bridge = module
+            mirrored = info.optBoolean("flip", false)
             step(88, "เตรียมการนับ")
 
             Log.i(TAG, "ready: $info")
             runOnUiThread {
                 step(95, "เชื่อมต่อกล้อง")
                 mainHandler.postDelayed(watchdog, WATCH_MS)
+                applyMirror()
                 placePreview()
                 if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
                     == PackageManager.PERMISSION_GRANTED
@@ -622,14 +627,47 @@ class MainActivity : ComponentActivity() {
     /**
      * Act on whatever the touch changed. Python decides; this only carries it out.
      *
-     * THERE IS NOTHING LEFT TO CARRY OUT, which is worth saying rather than deleting: the
-     * target, the counting frame, the page and the records all live on the Python side
-     * and are drawn from there on the next frame, so a press changes a number over there
-     * and Kotlin has no part in it. The one exception used to be the exposure slider,
-     * which the screen no longer has. Kept as the place a future one would go.
+     * ALMOST NOTHING REACHES HERE, and that is the design: the target, the counting frame,
+     * the page and the records all live on the Python side and are drawn from there on the
+     * next frame, so a press changes a number over there and Kotlin has no part in it.
+     *
+     * THE MIRROR IS THE ONE EXCEPTION, because the picture is the one thing on this screen
+     * Python does not draw. The video is CameraX's own preview surface showing through a
+     * hole in the canvas -- which is what lets it run at the display's rate instead of the
+     * model's -- and nothing on the Python side can turn that surface round. So the flip is
+     * done in two halves: Python mirrors the frame it analyses, so the marks and the
+     * counting region stay on the tablets they belong to, and this mirrors the surface, so
+     * the operator sees the same picture those marks were computed from. Doing one without
+     * the other puts every mark on the mirror image of its own tablet, which is a worse
+     * screen than the mirrored one it set out to fix.
      */
-    @Suppress("UNUSED_PARAMETER")
-    private fun applyTouchReply(reply: String) = Unit
+    private fun applyTouchReply(reply: String) {
+        val want = try {
+            JSONObject(reply).optBoolean("flip", mirrored)
+        } catch (t: Throwable) {
+            return                                  // a reply we cannot read changes nothing
+        }
+        if (want == mirrored) return
+        mirrored = want
+        runOnUiThread { applyMirror() }
+    }
+
+    /**
+     * Mirror the preview surface, or stop mirroring it.
+     *
+     * scaleX on the view rather than a different CameraSelector or a transform on the
+     * stream: this is a BACK camera, so nothing upstream is mirroring anything and there is
+     * no setting to turn off -- the mirror is in the lens's own idea of which way round the
+     * world is, and the honest fix is to draw the surface the other way round. It costs the
+     * compositor nothing; the view is already being scaled to fit the hole.
+     *
+     * The touch handler needs no matching change: taps are taken on the overlay above this
+     * surface, in canvas coordinates, and Python maps them onto the frame it has already
+     * mirrored. The two meet in the frame, which is the only space they share.
+     */
+    private fun applyMirror() {
+        previewView.scaleX = if (mirrored) -1f else 1f
+    }
 
     /**
      * The whole screen, with no system bars over it.

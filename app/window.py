@@ -25,8 +25,8 @@ from PySide6.QtCore import (QPropertyAnimation, QRectF, QSize, Qt, QTimer,
 from PySide6.QtGui import (QColor, QFont, QImage, QPainter, QPainterPath, QPen,
                            QPixmap)
 from PySide6.QtWidgets import (QFrame, QGraphicsOpacityEffect, QHBoxLayout,
-                               QLabel, QLineEdit, QProgressBar, QPushButton,
-                               QSizePolicy, QVBoxLayout, QWidget)
+                               QLabel, QLineEdit, QMessageBox, QProgressBar,
+                               QPushButton, QSizePolicy, QVBoxLayout, QWidget)
 
 from . import LOGO, RECORDS, SETTINGS
 from . import sound
@@ -53,10 +53,55 @@ ROI_BAND = (140, 245, 160)
 STALE_EDGE = (60, 60, 220)
 
 DRAW_MS = 16                # ~60 fps repaint, independent of the model
-MIN_ROI = 40                # frame pixels; under this, the drag was a click that slipped
+MIN_ROI = 40                # frame pixels; the shortest side a usable region can have
+
+#: Widget pixels a press may travel and still count as a tap on one spot.
+#:
+#: A corner is placed on RELEASE, not on press, so that sliding off before letting go
+#: takes the tap back -- the affordance every button on every screen already has, and the
+#: one that matters most when what is being placed is a corner of the counting region.
+TAP_SLOP = 8
+
+#: How many corners a region takes. FOUR, and the shape closes itself on the fourth.
+#:
+#: A tray seen from above is a quadrilateral -- and only a RECTANGLE when the lens is
+#: exactly square to the bench, which it never quite is. The rubber band this replaced
+#: could only make rectangles, so an angled camera left the operator choosing between a
+#: box that ate the bench beside the tray and one that cut its far corners off. Four
+#: corners cost four taps and buy the shape the tray actually has.
+ROI_POINTS = 4
 
 #: Said in the footer while the save button is dead, so the grey button is never a mystery.
 OVER_NOTE = "เกินจำนวนที่ต้องการ  นำออกก่อนจึงบันทึกได้"
+
+#: Said while a round has been taken but the tray it was taken from is still full.
+CLEAR_NOTE = "กวาดเม็ดในถาดออกให้หมด  แล้วจึงเทรอบต่อไป"
+
+#: Seconds the number must hold STILL before a round may be taken from it.
+#:
+#: NOT COSMETIC. pillcount-det-v3 reads a motionless tray with a spread of 1 -- the figure
+#: flickers between 34 and 35 as a box appears and disappears on one tablet at the edge of
+#: the region. A count taken on whichever frame the button happened to land on is therefore
+#: a coin toss between two numbers, and the one it picks is then FROZEN into the total and
+#: swept into a bottle where nobody can re-count it. Half a second of the same figure is
+#: cheap to wait for and turns the coin toss into a reading.
+SETTLE_S = 0.5
+
+#: How long a "press again to confirm" stays armed. Long enough to reach for a second
+#: time, short enough that a press a minute later is a fresh first press rather than the
+#: back half of a pair nobody remembers making.
+CONFIRM_S = 4.0
+
+#: Seconds the tray must read EMPTY before the next round is allowed to begin.
+#:
+#: This is the whole safety of multi-round counting. After a round is taken the tablets are
+#: still lying on the tray, and if the live count were added to the total again the moment
+#: the button came back up, one press of it would count the same 35 tablets twice -- 70 for
+#: a tray that holds 35, filed as if it were fact. So the total IGNORES the tray until the
+#: tray has been seen empty, which is the physical act (sweeping it into the bottle) that
+#: makes the next pour a different pour. A number cannot be counted twice if the machine
+#: has watched it leave.
+CLEAR_S = 0.4
 
 #: Seconds without a new frame before the picture is called dead. Above a dropped frame or
 #: two (this camera runs about 20fps), below the time it takes somebody to look up, press
@@ -74,8 +119,16 @@ PRESETS = (10, 20, 30, 60, 90, 100)
 #: up size on the count first, then the rhythm, and only at the end the preset row -- the
 #: one thing here that is a shortcut rather than a control, since the target can still be
 #: typed or stepped.
+#:
+#: The last two entries were added when the round row arrived below the presets. A row of
+#: buttons is about sixty pixels and the tightest fit had no sixty pixels spare, so it is
+#: paid for out of the count -- which is the right pocket: 44px of ExtraBold NUMERAL is
+#: still legible across a bench, and a numeral carries no tone marks, so shrinking it
+#: cannot break the way shrinking Thai text does. That asymmetry is why this list gives up
+#: the figure first and the words last.
 PANEL_FITS = ((104, 14, 24, True), (92, 14, 24, True), (80, 12, 20, True),
-              (68, 10, 16, True), (68, 8, 14, False), (56, 8, 12, False))
+              (68, 10, 16, True), (68, 8, 14, False), (56, 8, 12, False),
+              (48, 6, 10, False), (44, 4, 8, False))
 
 #: Header + footer + the body's top and bottom margins: everything between the window and
 #: the height the two cards get to share.
@@ -83,8 +136,102 @@ CHROME_H = 72 + 56 + 40
 
 
 # --------------------------------------------------------------------------- settings
+def quad(points, size, min_side=MIN_ROI):
+    """Four taps -> a simple quadrilateral, clamped to the frame, or None if it is unusable.
+
+    THE ORDER THEY WERE TAPPED IN IS THROWN AWAY. Four corners joined in tap order can
+    cross: top-left, bottom-right, top-right, bottom-left makes a bow tie, and
+    pointPolygonTest on a bow tie counts the pills in one lobe and not the other -- a wrong
+    count wearing a drawn region, which is the worst way to be wrong. So the corners can be
+    tapped in whatever order the hand reaches them.
+
+    THE ORDERING IS CHOSEN BY AREA, and that is exact rather than a heuristic. Four points
+    have only three distinct cyclic orders, and a crossed one's shoelace is the DIFFERENCE
+    of its two lobes -- so it can never total more than the same four corners joined
+    without a crossing. Taking the largest therefore picks the simple shape every time,
+    including the concave case where one corner was tapped inside the triangle of the other
+    three, which sorting the corners by angle round their centre does NOT reliably handle.
+
+    The ring is then turned to start at its lowest corner and wound in one direction, so
+    that the same four corners tapped in any of the twenty-four orders are SAVED as the
+    same four numbers -- a region that survives a restart has to compare equal to itself.
+
+    Clamped, because tapping past the edge of the picture is the ordinary way to say "all
+    of it" and a polygon outside the frame would quietly drop the pills nearest that edge.
+
+    REFUSED ON TWO COUNTS, because one is not enough. Area alone lets through a sliver six
+    hundred pixels long and three deep -- 1800 square pixels, over any floor worth setting,
+    and no tray. A bounding box alone lets through a thin diagonal kite that fills a corner
+    of a large box with nothing. A region has to be big BOTH ways and actually enclose
+    something.
+
+    model3/phone/screen.py has this function too, word for word, and the two are kept in step by a test
+    that runs both over the same inputs rather than by this sentence. Neither imports the
+    other: the bench must not depend on the phone's package, and the phone cannot have Qt
+    anywhere near it.
+    """
+    w, h = int(size[0]), int(size[1])
+    if len(points) != ROI_POINTS or w < 2 or h < 2:
+        return None
+    pts = [(min(max(int(x), 0), w - 1), min(max(int(y), 0), h - 1)) for x, y in points]
+
+    def enclosed(ring):
+        return abs(sum(ring[i][0] * ring[(i + 1) % 4][1] - ring[(i + 1) % 4][0] * ring[i][1]
+                       for i in range(4))) / 2.0
+
+    area, ring = -1.0, pts
+    for order in ((0, 1, 2, 3), (0, 1, 3, 2), (0, 2, 1, 3)):
+        loop = [pts[i] for i in order]
+        got = enclosed(loop)
+        if got > area:
+            area, ring = got, loop
+    start = min(range(4), key=lambda i: ring[i])
+    ring = ring[start:] + ring[:start]
+    if ring[1] > ring[3]:
+        ring = [ring[0]] + ring[:0:-1]
+
+    wide = max(p[0] for p in ring) - min(p[0] for p in ring)
+    tall = max(p[1] for p in ring) - min(p[1] for p in ring)
+    if wide < min_side or tall < min_side or area < min_side * min_side:
+        return None
+    return ring
+
+
 def roi_path(camera):
     return os.path.join(SETTINGS, f"roi-cam{camera}.json")
+
+
+def view_path(camera):
+    return os.path.join(SETTINGS, f"view-cam{camera}.json")
+
+
+def load_flip(camera) -> bool:
+    """Whether this camera's picture is mirrored. A FILE OF ITS OWN, beside the region.
+
+    ON UNTIL SOMEBODY TURNS IT OFF. A webcam and a phone camera are both built to be
+    pointed at a face, and both hand over a mirror image because that is what a face
+    expects to see; a tray does not. Measured on this bench, both screens showed the tray
+    the wrong way round, so the setting that matches the hardware is the one that should
+    need no press -- and the press is there for a camera that does not mirror.
+
+    Not a field in the region file, which is where it nearly went. Clearing the region
+    deletes that file, and an operator who redraws the tray has not asked for the picture
+    to turn round -- they would find it mirrored again with nothing on screen to explain
+    why. The two settings have different lifetimes, so they get different files.
+    """
+    try:
+        with open(view_path(camera), encoding="utf-8") as fh:
+            return bool(json.load(fh).get("flip", True))
+    except Exception:                                           # noqa: BLE001
+        return True
+
+
+def save_flip(camera, flip):
+    os.makedirs(SETTINGS, exist_ok=True)
+    with open(view_path(camera), "w", encoding="utf-8") as fh:
+        json.dump({"camera": camera, "flip": bool(flip),
+                   "saved": time.strftime("%Y-%m-%d %H:%M")}, fh,
+                  ensure_ascii=False, indent=2)
 
 
 def load_roi(camera, size):
@@ -205,24 +352,26 @@ def _rule() -> QFrame:
 
 
 class CameraView(QLabel):
-    """The live picture, and the rubber band the tray region is dragged out with.
+    """The live picture, and the corners of the counting region tapped onto it.
 
-    DRAGGED, NOT CLICKED CORNER BY CORNER. It used to take four clicks: four chances to put
-    a corner in the wrong place, and a mode the operator had to be told they were in. A drag
-    is the gesture everyone already owns from every photo tool they have used -- press at
-    one corner of the tray, pull to the other, let go. What it makes is a rectangle, and a
-    tray IS a rectangle from above; the odd quadrilateral the four clicks allowed was never
-    worth the cost of getting there.
+    A CORNER AT A TIME, NOT A RUBBER BAND. The band was here first and was chosen for good
+    reasons -- one gesture, no mode, and everybody already owns it from every photo tool
+    they have used. What it could not do is the shape: a band draws a rectangle, and a tray
+    is a rectangle only when the lens is exactly square to the bench. It never quite is. On
+    this bench the camera looks down at an angle and the tray arrives as a trapezoid, so
+    the band left a choice between a box that took in the bench beside the tray and one
+    that cut the far corners off -- and pills sit in corners.
+
+    Four taps cost three more gestures than a drag and buy the shape the tray actually has.
+    The order they are tapped in does not matter; see quad().
 
     Every coordinate leaving this class is in FRAME pixels, the only space the model and the
     saved region agree on. The widget's own pixels stop meaning anything the moment somebody
     resizes the window.
     """
 
-    started = Signal(float, float)          # press, in frame coordinates
-    dragged = Signal(float, float)          # moved while held
-    finished = Signal()                     # released
-    cancelled = Signal()                    # right click
+    tapped = Signal(float, float)           # a corner, in frame coordinates
+    cancelled = Signal()                    # right click: take the last corner back
 
     def __init__(self):
         super().__init__()
@@ -232,12 +381,19 @@ class CameraView(QLabel):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._geom = None                   # (x0, y0, scale) of the last drawn pixmap
         self._pix = None                    # the frame as painted, letterboxed
+        self._fw = 0                        # the frame's width, for the mirror
+        #: Is the picture being shown left-to-right reversed. Set by the window, and the
+        #: ONLY thing this class does with it is undo it on the way in -- see _to_frame.
+        self.flip = False
         self.arming = False                 # set by the window; drives the cursor
-        self._down = False
+        self._press_at = None               # where the button went down, for TAP_SLOP
 
     def set_arming(self, on):
         self.arming = on
         self.setCursor(Qt.CrossCursor if on else Qt.ArrowCursor)
+
+    def set_flip(self, on):
+        self.flip = bool(on)
 
     def minimumSizeHint(self):
         """A picture must never set the floor for the window. Found while measuring.
@@ -253,6 +409,7 @@ class CameraView(QLabel):
 
     def show_frame(self, bgr):
         h, w = bgr.shape[:2]
+        self._fw = w
         img = QImage(bgr.data, w, h, 3 * w, QImage.Format_BGR888)
         pix = QPixmap.fromImage(img).scaled(self.size(), Qt.KeepAspectRatio,
                                             Qt.SmoothTransformation)
@@ -293,41 +450,51 @@ class CameraView(QLabel):
 
         The picture is letterboxed inside the widget, so the point comes back through the
         same offset and scale it was drawn with -- otherwise the region lands somewhere
-        near, but not where, the operator dragged it.
+        near, but not where, the operator tapped it.
+
+        AND THROUGH THE MIRROR, when the picture is being shown reversed. This is one of
+        exactly two places the flip exists: the window mirrors the finished picture on its
+        way to the screen, and this undoes it on the way back in. Between them the frame,
+        the model, the counting region and the saved record never learn that the setting
+        exists -- which is the point. A flip applied to the frame itself would feed the
+        detector a different image and can move the count; measured on this bench it moved
+        it by three on one tray. A preference about which way round a picture looks must
+        not be able to change a number that goes in a record.
         """
         if self._geom is None:
             return None
         x0, y0, scale = self._geom
         if scale <= 0:
             return None
-        return (pos.x() - x0) / scale, (pos.y() - y0) / scale
+        x = (pos.x() - x0) / scale
+        if self.flip and self._fw:
+            x = self._fw - 1 - x
+        return x, (pos.y() - y0) / scale
 
     def mousePressEvent(self, ev):
         if ev.button() == Qt.RightButton:
-            self._down = False
+            self._press_at = None
             self.cancelled.emit()
             return
-        point = self._to_frame(ev.position())
-        if not self.arming or point is None:
-            return
-        self._down = True
-        self.started.emit(*point)
-
-    def mouseMoveEvent(self, ev):
-        if not self._down:
-            return
-        point = self._to_frame(ev.position())
-        if point is not None:
-            self.dragged.emit(*point)
+        self._press_at = ev.position() if self.arming else None
 
     def mouseReleaseEvent(self, ev):
-        if ev.button() != Qt.LeftButton or not self._down:
+        """The corner lands HERE, and only if the mouse did not wander on the way.
+
+        Placing it on the press would be a fraction more responsive and would give the
+        operator no way out of a click they had already started. Every button on every
+        screen lets you slide off before letting go; a corner of the region that decides
+        which pills are counted deserves at least as much.
+        """
+        start, self._press_at = self._press_at, None
+        if ev.button() != Qt.LeftButton or start is None or not self.arming:
             return
-        point = self._to_frame(ev.position())
+        here = ev.position()
+        if abs(here.x() - start.x()) > TAP_SLOP or abs(here.y() - start.y()) > TAP_SLOP:
+            return
+        point = self._to_frame(here)
         if point is not None:
-            self.dragged.emit(*point)
-        self._down = False
-        self.finished.emit()
+            self.tapped.emit(*point)
 
 
 class Tick(QWidget):
@@ -458,7 +625,35 @@ class Window(QWidget):
         self.camera = camera
         self.target = int(target)
         self.arming = False
-        self.drag = None                    # (x0, y0, x1, y1) in frame pixels, mid-drag
+        #: COUNTS ALREADY TAKEN AND ALREADY TIPPED AWAY, in the order they were taken.
+        #:
+        #: The tray holds about sixty tablets before they start lying on top of one another,
+        #: and a detector cannot count what it cannot see -- so a prescription for a hundred
+        #: is physically two pours, and was unanswerable here until this list existed. Every
+        #: figure in it came off a still tray, was read for half a second before it was
+        #: taken, and was confirmed by a person. What is on screen is this list plus
+        #: whatever is on the tray NOW; an empty list makes that the plain live count, which
+        #: is exactly what the screen did before and what it still does for one pour.
+        self.rounds = []
+        #: (frame, boxes, confidences) for each of those, so a disputed total can be
+        #: re-counted by eye pour by pour instead of being taken on trust.
+        self.round_shots = []
+        #: True between taking a round and seeing the tray empty. See CLEAR_S.
+        self.clearing = False
+        self._steady_n = None               # the count the stillness timer is timing
+        self._steady_at = 0.0               # when it last changed
+        self._can_round = False             # set every repaint, alongside the button
+        self._round_block = ""              # and why not, for the footer to say
+        self._save_kind = "primary"         # or "warn"; restyled only when it changes
+        self._reset_armed_at = 0.0          # the two-press guard on starting over
+        #: Show the picture left-to-right reversed. A webcam is built to be pointed at a
+        #: face and hands over a mirror image because that is what a face expects; a tray
+        #: does not, and the operator reaches left for a tablet the screen shows on the
+        #: right. On until somebody turns it off, because that is what the hardware does.
+        #:
+        #: IT TOUCHES THE DRAWING AND NOTHING ELSE. See CameraView._to_frame.
+        self.flip = load_flip(camera)
+        self.pending = []                   # corners tapped so far, in frame pixels
         self.note = ""                      # footer message
         self._fit = None                    # the PANEL_FITS entry now applied
         self._bar_colour = None             # so the bar is restyled only on a change
@@ -494,6 +689,7 @@ class Window(QWidget):
         root.addWidget(body, 1)
         root.addWidget(self._footer())
 
+        self.view.set_flip(self.flip)
         frame, _ = self.capture.latest()
         if frame is not None:
             pts, why = load_roi(camera, (frame.shape[1], frame.shape[0]))
@@ -529,6 +725,22 @@ class Window(QWidget):
             QPushButton#primary:pressed {{ background: {T.GREEN_900}; }}
             QPushButton#primary:disabled {{ background: {T.LINE};
                                             color: {T.INK_MUTED}; }}
+            /* THE SAME BUTTON IN A DIFFERENT COAT, for a save that files a SHORT count.
+               Not a second button somewhere else on the panel: there is one save here and
+               adding a rival to it would make the operator choose between two things that
+               both file a record, which is exactly the decision they should not be asked
+               to get right at speed. It is the same control, wearing what it is about to
+               do. Orange rather than red because a short dispense is a legitimate act --
+               the stock ran out -- and red is reserved here for the machine having
+               stopped. */
+            QPushButton#warn {{
+                font-family: {T.FONT_STACK}; background: {T.WARN}; color: #fff;
+                border: 0; border-radius: {T.R_MD}px; padding: 20px;
+                font-size: 22px; font-weight: 700; }}
+            QPushButton#warn:hover {{ background: #f0954f; }}
+            QPushButton#warn:pressed {{ background: #cf6f28; }}
+            QPushButton#warn:disabled {{ background: {T.LINE};
+                                         color: {T.INK_MUTED}; }}
             QPushButton#ghost {{
                 font-family: {T.FONT_STACK}; background: {T.SURFACE}; color: {T.INK};
                 border: 1px solid {T.LINE_STRONG}; border-radius: {T.R_MD}px;
@@ -545,6 +757,8 @@ class Window(QWidget):
             QPushButton#topbtn:hover {{ background: {T.GREEN_TINT};
                                         border-color: {T.GREEN_500}; }}
             QPushButton#topbtn:pressed {{ background: {T.LINE}; }}
+            QPushButton#topbtn:checked {{ background: {T.GREEN_700}; color: #fff;
+                                          border-color: {T.GREEN_700}; }}
             /* 30px, not the 999px that was here. A radius Qt considers absurd is a
                radius Qt declines to draw: it fell back to a barely-rounded box, which is
                why the phone's controls were capsules and the bench's were rectangles
@@ -631,6 +845,18 @@ class Window(QWidget):
         lay.setContentsMargins(24, 24, 24, 24)
         lay.setSpacing(14)
 
+        # WHERE THE BIG NUMBER CAME FROM, and only when that is a question. On one pour it
+        # says nothing and takes no room, because on one pour the figure below is simply
+        # what the camera can see and a caption explaining that would be noise. From the
+        # second pour on, the figure is PARTLY MEMORY -- 35 of it is in a bottle and cannot
+        # be checked against the picture -- and a number on a screen that the picture does
+        # not corroborate has to say so out loud, or the operator has no way to tell a
+        # working total from a stuck one.
+        self.rounds_lbl = styled(QLabel(""), 19, QFont.DemiBold, T.INK_SOFT)
+        self.rounds_lbl.setAlignment(Qt.AlignCenter)
+        self.rounds_lbl.setVisible(False)
+        lay.addWidget(self.rounds_lbl)
+
         self.count_lbl = styled(QLabel("0"), PANEL_FITS[0][0], QFont.ExtraBold,
                                 T.GREEN_700)
         self.count_lbl.setAlignment(Qt.AlignCenter)
@@ -694,6 +920,33 @@ class Window(QWidget):
 
         lay.addStretch(1)
 
+        # THE ROUND CONTROLS SIT ABOVE THE REGION CONTROLS, and the order is the order of
+        # the job: the region is set once when the camera is aimed and then never touched,
+        # while these two are pressed once per pour, with a tray in the other hand. The
+        # thing used every minute belongs nearer the thumb than the thing used every week.
+        rrow = QHBoxLayout()
+        rrow.setSpacing(10)
+
+        self.round_btn = sized(QPushButton("เก็บรอบที่ 1"), 19)
+        self.round_btn.setObjectName("ghost")
+        self.round_btn.clicked.connect(self._take_round)
+        rrow.addWidget(self.round_btn, 1)
+
+        # THE WAY OUT, and it throws the whole total away rather than one pour.
+        #
+        # It used to step back a single pour, which sounds gentler and is false precision.
+        # When something has gone wrong mid-prescription -- a tray tipped twice, a pour
+        # banked off the wrong tray, a number nobody is sure of -- the operator does not
+        # know WHICH pour is wrong, and a button that removes the last one invites them to
+        # guess. There is no evidence left to check against either: those tablets are in a
+        # bottle. Tipping the bottle back out and counting the prescription again is what
+        # actually restores certainty, so that is what the button does and what it says.
+        self.reset_btn = sized(QPushButton("นับใหม่"), 19)
+        self.reset_btn.setObjectName("ghost")
+        self.reset_btn.clicked.connect(self._reset_clicked)
+        rrow.addWidget(self.reset_btn)
+        lay.addLayout(rrow)
+
         # ONE ROW, as on the phone. The two are a pair -- set the frame, clear the frame
         # -- and a full-width button each read as two unrelated commands while spending
         # two rows of panel to say it. Side by side they are visibly one control with two
@@ -732,6 +985,21 @@ class Window(QWidget):
         head.setSpacing(24)                 # the padding the chips used to carry
         head.addWidget(styled(QLabel("ภาพจากกล้อง"), 19, QFont.DemiBold, T.INK_SOFT))
         head.addStretch(1)
+        # THE FLIP LIVES ON THE PICTURE'S CARD, not in the counting panel. It is a property
+        # of the picture rather than of the count, it is set once when the camera is aimed
+        # and then never again, and the panel has no row to spare -- the header of this card
+        # is the only place on the screen with room that is also the right place.
+        self.flip_btn = sized(QPushButton("พลิกภาพ"), 19)
+        self.flip_btn.setObjectName("topbtn")
+        # CHECKABLE, so the button says which way the picture is rather than only offering
+        # to change it. Somebody who walks up to this bench cannot tell a mirrored tray
+        # from an unmirrored one by looking at the tray -- both are a tray from above --
+        # and a plain button would leave them pressing it twice to find out.
+        self.flip_btn.setCheckable(True)
+        self.flip_btn.setChecked(self.flip)
+        self.flip_btn.clicked.connect(self._flip_clicked)
+        head.addWidget(self.flip_btn)
+        head.addSpacing(8)
         self.roi_chip = styled(QLabel(""), 18, QFont.DemiBold)
         head.addWidget(self.roi_chip)
         self.ms_chip = styled(QLabel(""), 18, QFont.DemiBold)
@@ -739,10 +1007,8 @@ class Window(QWidget):
         lay.addLayout(head)
 
         self.view = CameraView()
-        self.view.started.connect(self._drag_start)
-        self.view.dragged.connect(self._drag_to)
-        self.view.finished.connect(self._drag_done)
-        self.view.cancelled.connect(self._drag_cancel)
+        self.view.tapped.connect(self._corner)
+        self.view.cancelled.connect(self._corner_undo)
         lay.addWidget(self.view, 1)
         return card
 
@@ -795,6 +1061,61 @@ class Window(QWidget):
             f"conf {self.infer.conf}   iou {self.infer.iou}   "
             f"imgsz {self.infer.imgsz}   บันทึกไว้ {saved} รายการ")
 
+    # ------------------------------------------------------------------------- rounds
+    def banked(self) -> int:
+        """Tablets already counted and already tipped out of the tray."""
+        return sum(self.rounds)
+
+    def _take_round(self):
+        """Freeze what is on the tray into the total, and refuse the tray until it is empty.
+
+        The guard is not the disabled button repeated for neatness. A disabled button is a
+        drawing; the rule that a pour is only counted when the figure has settled, the
+        picture is alive and the tray has been seen empty since the last pour is what stops
+        the same tablets being counted twice, and it has to live where the addition happens.
+        """
+        if not self._can_round:
+            self.note = self._round_block or self.note
+            return
+        frame, (boxes, confs, count, _ms) = self.infer.snapshot()
+        if count <= 0:
+            return
+        self.rounds.append(int(count))
+        self.round_shots.append((frame, boxes, confs))
+        self.clearing = True
+        self._steady_n = None               # the stillness timer restarts on the new state
+        sound.round_taken()
+        self.note = CLEAR_NOTE
+        self.toast.flash(f"เก็บรอบที่ {len(self.rounds)}  {count} เม็ด",
+                         f"สะสมแล้ว {self.banked()} เม็ด   {CLEAR_NOTE}")
+
+    def _reset_clicked(self):
+        """Start the prescription again. TWICE, because the total cannot be got back.
+
+        The same guard the mid-pour save carries, for the same reason and in the lighter
+        form: what is being discarded is a count of tablets that are already in a bottle,
+        so it cannot be recovered by looking at anything. Arming the button and saying on
+        it what the next press costs turns an accident into two accidents in a row.
+        """
+        if not (self.rounds or self.clearing):
+            return
+        if time.time() - self._reset_armed_at < CONFIRM_S:
+            banked = self.banked()
+            self._clear_rounds()
+            self.note = f"เริ่มนับใหม่  ทิ้งยอดสะสม {banked} เม็ดแล้ว"
+            return
+        self._reset_armed_at = time.time()
+        self.note = (f"จะทิ้งยอดสะสม {self.banked()} เม็ด  "
+                     "กดอีกครั้งเพื่อเริ่มนับใหม่")
+
+    def _clear_rounds(self):
+        """Back to a single-pour screen. After a save, or when the operator starts over."""
+        self.rounds = []
+        self.round_shots = []
+        self.clearing = False
+        self._steady_n = None
+        self._reset_armed_at = 0.0
+
     def _set_target(self, value):
         self.target = max(0, int(value))
         self.target_edit.setText(str(self.target))
@@ -803,80 +1124,103 @@ class Window(QWidget):
         text = self.target_edit.text().strip()
         self._set_target(int(text) if text.isdigit() else 0)
 
+    def _flip_clicked(self):
+        """Turn the picture round. NOTHING ELSE MOVES, and that is the whole design.
+
+        An earlier version of this flipped the camera frame itself and then had to mirror
+        the counting region to match, because the region is stored in frame pixels and
+        would otherwise have jumped to the other side of the bench. It worked, and it was
+        wrong twice over: the detector was handed a different image -- measured on this
+        bench, mirroring moved the count by as much as three on one tray -- and the record
+        it saved was of a picture that only existed because of a display preference.
+
+        Now the frame is never touched. The window mirrors the finished picture on its way
+        to the screen and CameraView undoes it on the way back in, so the region, the
+        model, the marks and the saved JPEG all go on living in the camera's own
+        coordinates and none of them can tell this setting apart from the other one.
+        """
+        self.flip = not self.flip
+        save_flip(self.camera, self.flip)
+        self.view.set_flip(self.flip)
+        self.flip_btn.setChecked(self.flip)
+        self._disarm()
+        self.note = "พลิกภาพซ้าย-ขวาแล้ว" if self.flip else "เลิกพลิกภาพแล้ว"
+
     def _roi_clicked(self):
-        """Arm the drag, or cancel it if it is armed already."""
+        """Start placing corners, or stop if they are already being placed."""
         if self.arming:
             self._disarm()
             return
         self.arming = True
-        self.drag = None
+        self.pending = []
         self.view.set_arming(True)
         self.roi_btn.setText("ยกเลิก")
-        self.roi_clear.setEnabled(bool(self.infer.roi))
-        self.note = "ลากเมาส์คลุมพื้นที่ถาด     คลิกขวาเพื่อยกเลิก"
+        self._roi_prompt()
 
     def _roi_cleared(self):
+        """The second button in the row: take a corner back, or clear the whole region.
+
+        ONE BUTTON, TWO JOBS, and they are the same job at two moments. While corners are
+        being placed the only thing anybody wants from it is the last one back; once the
+        region is set the only thing anybody wants is it gone. A separate undo would sit
+        dead and unexplained for all the hours nobody is drawing a region.
+        """
+        if self.arming:
+            self._corner_undo()
+            return
         self.infer.roi = None
         self._persist()
         self._disarm()
 
-    def _drag_start(self, x, y):
-        self.drag = (x, y, x, y)
-
-    def _drag_to(self, x, y):
-        if self.drag:
-            self.drag = (self.drag[0], self.drag[1], x, y)
-
-    def _drag_done(self):
-        """Keep the region if the drag drew one, and say so plainly if it did not.
-
-        A press that barely moves is a CLICK, not a region -- an operator steadying the
-        mouse, or one who has not noticed the screen is waiting for a drag. Taken as a 20px
-        box it would drop the count to zero and look like the model had failed, so the rule
-        is explicit and the window asks again instead.
-        """
-        rect, self.drag = self.drag, None
-        if not rect:
+    def _corner(self, x, y):
+        """One corner placed. The fourth closes the shape and sets the region."""
+        if not self.arming:
             return
-        pts = self._rect_points(rect)
+        self.pending.append((x, y))
+        if len(self.pending) < ROI_POINTS:
+            self._roi_prompt()
+            return
+        frame, _ = self.capture.latest()
+        size = (frame.shape[1], frame.shape[0]) if frame is not None else (0, 0)
+        pts = quad(self.pending, size)
         if pts is None:
-            self.note = f"กรอบเล็กเกินไป  ลากให้กว้างกว่า {MIN_ROI} จุดภาพ"
+            # The four corners enclose nothing worth counting -- tapped on one spot, or
+            # strung out in a line. Only the last one is dropped: three good corners and a
+            # slip is the likely case, and throwing all four away would make the operator
+            # pay for the slip four times.
+            self.pending.pop()
+            self.note = f"มุมนี้แคบเกินไป  แตะให้ห่างจากมุมอื่นกว่า {MIN_ROI} จุดภาพ"
             return
         self.infer.roi = pts
         self._persist()
         self._disarm()
         self.note = "กำหนดกรอบแล้ว"
 
-    def _drag_cancel(self):
-        if self.arming:
-            self.drag = None
-            self._disarm()
+    def _corner_undo(self):
+        """Right click, or the second button: the last corner back, then the whole mode."""
+        if not self.arming:
+            return
+        if self.pending:
+            self.pending.pop()
+            self._roi_prompt()
+            return
+        self._disarm()
 
-    def _rect_points(self, rect):
-        """The drag as four clockwise corners, clamped to the frame, or None if too small.
-
-        Clamped because dragging from the middle of the tray out past the edge of the
-        picture is the ordinary way to say "all of it", and a polygon with coordinates
-        outside the frame would quietly drop the pills nearest that edge.
-        """
-        frame, _ = self.capture.latest()
-        if frame is None:
-            return None
-        h, w = frame.shape[:2]
-        x0, x1 = sorted((rect[0], rect[2]))
-        y0, y1 = sorted((rect[1], rect[3]))
-        x0, x1 = max(0, int(x0)), min(w - 1, int(x1))
-        y0, y1 = max(0, int(y0)), min(h - 1, int(y1))
-        if x1 - x0 < MIN_ROI or y1 - y0 < MIN_ROI:
-            return None
-        return [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+    def _roi_prompt(self):
+        """What the footer says while corners are going down, and what the row offers."""
+        left = ROI_POINTS - len(self.pending)
+        self.note = (f"แตะมุมถาดทีละมุม  อีก {left} จุด"
+                     "     คลิกขวาเพื่อถอยจุดล่าสุด")
+        self.roi_clear.setText("ถอยจุด")
+        self.roi_clear.setEnabled(bool(self.pending))
 
     def _disarm(self):
         self.arming = False
-        self.drag = None
+        self.pending = []
         self.view.set_arming(False)
         self.roi_btn.setText("กำหนดกรอบใหม่" if self.infer.roi
                              else "กำหนดกรอบนับ")
+        self.roi_clear.setText("ล้างกรอบ")
         self.roi_clear.setEnabled(bool(self.infer.roi))
         self.note = ""
 
@@ -901,30 +1245,119 @@ class Window(QWidget):
             self.note = self._block
             return
         frame, (boxes, confs, count, ms) = self.infer.snapshot()
+        # THE SAME ARITHMETIC THE SCREEN DID, not the live count on its own. A save that
+        # filed the tray while the screen showed the total would put 25 in the record for a
+        # prescription of 60 -- a record that is not merely wrong but wrong in the direction
+        # that reads as a short dispense, and unfalsifiable afterwards because the other 35
+        # are in a bottle. `clearing` is honoured here for the same reason it is honoured
+        # on screen: mid-sweep those tablets are already in `rounds`.
+        live = 0 if self.clearing else int(count)
+        rounds = list(self.rounds) + ([live] if live or not self.rounds else [])
+        total = self.banked() + live
+        # EVERY NUMBER IS ALREADY FIXED BEFORE THE QUESTION IS ASKED, and that is why the
+        # question is asked here rather than before the snapshot. A modal runs a nested
+        # event loop, so the repaint timer keeps firing behind it: the tray can empty, the
+        # count can move, `clearing` can end. Re-reading any of it afterwards would file a
+        # number the operator was never shown, which is the one outcome a confirmation is
+        # supposed to make impossible.
+        if not self._confirm_partial(total, rounds):
+            self.note = "ยกเลิกการบันทึก"
+            return
         os.makedirs(RECORDS, exist_ok=True)
         stamp = self._free_stamp()
         record = {
             "time": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "count": int(count),
+            # `count` STAYS THE TOTAL. Every reader of these files -- the list, the detail
+            # pane, the CSV, and whatever a pharmacy opens them with next year -- asks this
+            # field how many tablets were dispensed, and the answer must not depend on
+            # knowing that a newer field exists. `rounds` adds detail; it never corrects.
+            "count": int(total),
             "target": int(self.target),
-            "difference": int(count) - int(self.target) if self.target else None,
+            "difference": int(total) - int(self.target) if self.target else None,
+            "rounds": [int(n) for n in rounds],
+            # Deliberately short, and recorded as such. `difference` already carries the
+            # arithmetic, but a reader with a spreadsheet has to know to do the comparison
+            # before a short dispense becomes visible to them; a flag is visible without
+            # being looked for. It is false when no target was set, because with nothing to
+            # fall short OF the question does not arise.
+            "short": bool(self.target and total < self.target),
             "conf": self.infer.conf, "iou": self.infer.iou, "imgsz": self.infer.imgsz,
             "roi": [[int(x), int(y)] for x, y in self.infer.roi] if self.infer.roi else None,
             "model_ms": round(float(ms), 1),
             "boxes": [[round(float(v), 1) for v in b] for b in boxes],
             "confidences": [round(float(c), 3) for c in confs],
         }
+        # ONE FRAME PER POUR. `count_<stamp>.jpg` stays the last tray, because that is the
+        # one the `boxes` above belong to and a record whose picture and boxes disagree is
+        # worse than a record with no picture. The earlier pours go beside it numbered, so a
+        # total of 60 that nobody can re-count on a tray can still be re-counted on two.
+        shots = []
+        for i, (shot_frame, _b, _c) in enumerate(self.round_shots, start=1):
+            if shot_frame is None:
+                continue
+            name = f"count_{stamp}_r{i}.jpg"
+            if cv2.imwrite(os.path.join(RECORDS, name), shot_frame):
+                shots.append(name)
+        if shots:
+            record["round_images"] = shots
         with open(os.path.join(RECORDS, f"count_{stamp}.json"), "w",
                   encoding="utf-8") as fh:
             json.dump(record, fh, ensure_ascii=False, indent=2)
         if frame is not None:
             cv2.imwrite(os.path.join(RECORDS, f"count_{stamp}.jpg"), frame)
-        self.note = f"บันทึกแล้ว {count} เม็ด"
+        detail = f"  ({' + '.join(str(n) for n in rounds)})" if len(rounds) > 1 else ""
+        self.note = f"บันทึกแล้ว {total} เม็ด{detail}"
         self._meta()
         target = f"  จากที่ต้องการ {self.target}" if self.target else ""
         sound.saved()
-        self.toast.flash(f"บันทึกแล้ว  {count} เม็ด",
+        self.toast.flash(f"บันทึกแล้ว  {total} เม็ด{detail}",
                          f"{time.strftime('%H:%M:%S')}{target}   ไฟล์ count_{stamp}")
+        # BACK TO A BLANK SCREEN, and this is the last line for a reason: the rounds are
+        # only safe to forget once they are on disk. A crash or a full disk above this point
+        # leaves the total on screen, where the operator can press save again.
+        self._clear_rounds()
+
+    def _confirm_partial(self, total, rounds) -> bool:
+        """Ask before filing a total that has pours banked in it and has not reached target.
+
+        ONLY THAT CASE. A short count on ONE tray is the stock running out and is already
+        told apart by the button's colour and its words -- adding a dialog to it would put
+        a modal in front of an errand the operator runs all day, and a modal that appears
+        every day is a modal nobody reads by the end of the week.
+
+        What is different mid-pour is what a stray press DESTROYS. The tablets in `rounds`
+        are in the bottle: they cannot be re-counted, they are not on the tray, and the only
+        record of them is the list this method is standing in front of. Saving clears it. So
+        the operator who meant to press it after the next pour and pressed it now does not
+        merely file a wrong number -- they lose the count and have to tip the bottle out and
+        start the prescription again. That is worth one question.
+
+        The safe answer is the default, so the dialog can be dismissed with Escape or Enter
+        by somebody who did not mean to open it and nothing will have happened.
+        """
+        if not (self.rounds and self.target and total < self.target):
+            return True
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("ยังเทค้างอยู่")
+        box.setText("ยังเทค้างอยู่")
+        box.setInformativeText(
+            f"เก็บแล้ว {len(self.rounds)} รอบ = {' + '.join(str(n) for n in rounds)} "
+            f"= {total} เม็ด\n"
+            f"จากที่ต้องการ {self.target} เม็ด  ขาดอีก {self.target - total} เม็ด\n\n"
+            f"ถ้าบันทึกตอนนี้ ยอดสะสมจะถูกล้าง และนับต่อจากเดิมไม่ได้")
+        # 19px, the same floor the rest of this screen holds to, and set on the box rather
+        # than inherited: a QMessageBox picks up the window's sheet, whose QWidget rule is
+        # 16px, and Thai tone marks do not survive 16px at this DPI.
+        box.setStyleSheet(f"QLabel {{ font-family: {T.FONT_STACK}; font-size: 19px; }}"
+                          f"QPushButton {{ font-family: {T.FONT_STACK}; font-size: 19px; "
+                          f"font-weight: 600; padding: 10px 18px; }}")
+        back = box.addButton("กลับไปเทต่อ", QMessageBox.RejectRole)
+        go = box.addButton(f"บันทึก {total} เม็ด", QMessageBox.AcceptRole)
+        box.setDefaultButton(back)
+        box.setEscapeButton(back)
+        box.exec()
+        return box.clickedButton() is go
 
     def _free_stamp(self) -> str:
         """A file name no record already has.
@@ -974,30 +1407,32 @@ class Window(QWidget):
     def _draw_roi(self, shown):
         """The region, drawn two different ways on purpose.
 
-        WHILE DRAGGING the picture OUTSIDE the band is darkened and the band itself is left
-        at full brightness. Dimming the rest is what makes a selection read as a selection
-        -- the eye is pulled to the bright part, and the operator can see at a glance which
-        pills will be counted, which is the whole question they are answering.
+        WHILE THE CORNERS ARE GOING DOWN each one is a bright ring with its number beside
+        it, joined by the edges so far, and the shape closes itself the moment the fourth
+        lands. The numbers are there because they answer the question the operator has --
+        how many more -- on the picture they are looking at rather than in the footer they
+        are not.
+
+        RINGS, NOT FILLED DOTS. A corner of a full tray has a pill under it, and a solid
+        mark would hide the very thing the corner is being placed around.
 
         ONCE IT IS SET the treatment goes quiet: a thin outline, a wash of green so faint it
         would not survive being described as a colour, and corner ticks. The region is then
         background information, and a bright box over a tray that is being worked in would
         compete with the markers, which are the thing that has to be visible.
         """
-        if self.drag:
-            pts = self._band_points(self.drag)
-            if pts is None:
-                return
-            (x0, y0), (x1, y1) = pts[0], pts[2]
-            dim = shown.copy()
-            cv2.rectangle(dim, (0, 0), (shown.shape[1], shown.shape[0]), (0, 0, 0), -1)
-            cv2.rectangle(dim, (x0, y0), (x1, y1), (0, 0, 0), -1)   # hole, filled back in
-            inside = shown[y0:y1, x0:x1].copy()
-            cv2.addWeighted(dim, 0.45, shown, 0.55, 0, shown)
-            if inside.size:
-                shown[y0:y1, x0:x1] = inside
-            cv2.rectangle(shown, (x0, y0), (x1, y1), ROI_BAND, 2, cv2.LINE_AA)
-            self._corner_ticks(shown, pts, ROI_BAND, 18, 3)
+        if self.arming:
+            pts = [(int(x), int(y)) for x, y in self.pending]
+            if len(pts) > 1:
+                cv2.polylines(shown, [np.array(pts, np.int32).reshape(-1, 1, 2)],
+                              False, ROI_BAND, 2, cv2.LINE_AA)
+            for i, (x, y) in enumerate(pts, start=1):
+                cv2.circle(shown, (x, y), 9, (0, 0, 0), 4, cv2.LINE_AA)
+                cv2.circle(shown, (x, y), 9, ROI_BAND, 2, cv2.LINE_AA)
+                cv2.putText(shown, str(i), (x + 14, y - 10), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.7, (0, 0, 0), 4, cv2.LINE_AA)
+                cv2.putText(shown, str(i), (x + 14, y - 10), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.7, ROI_BAND, 2, cv2.LINE_AA)
             return
 
         pts = self.infer.roi or []
@@ -1027,25 +1462,6 @@ class Window(QWidget):
             cv2.line(shown, (x, y), (int(x + sx), y), colour, width, cv2.LINE_AA)
             cv2.line(shown, (x, y), (x, int(y + sy)), colour, width, cv2.LINE_AA)
 
-    def _band_points(self, rect):
-        """The live drag as four corners -- the same maths as _rect_points, minus the veto.
-
-        No minimum here: the band has to follow the mouse from the first pixel, or the
-        gesture feels broken for the first half-inch. The size rule belongs at the end of
-        the drag, where it decides whether to KEEP the region.
-        """
-        frame, _ = self.capture.latest()
-        if frame is None:
-            return None
-        h, w = frame.shape[:2]
-        x0, x1 = sorted((rect[0], rect[2]))
-        y0, y1 = sorted((rect[1], rect[3]))
-        x0, x1 = max(0, int(x0)), min(w - 1, int(x1))
-        y0, y1 = max(0, int(y0)), min(h - 1, int(y1))
-        if x1 <= x0 or y1 <= y0:
-            return None
-        return [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
-
     # ------------------------------------------------------------------------ repaint
     def _tick(self):
         frame, _ = self.capture.latest()
@@ -1071,14 +1487,59 @@ class Window(QWidget):
             cv2.rectangle(shown, (0, 0), (shown.shape[1] - 1, shown.shape[0] - 1),
                           STALE_EDGE, 10)
 
+        # THE MIRROR, IN ONE LINE AND AT THE VERY END. Everything above drew in the
+        # camera's coordinates -- the marks, the region, the corners going down, the red
+        # border on a dead picture -- so one flip of the finished picture carries all of
+        # them together and none of them had to know. The other half is
+        # CameraView._to_frame, which undoes it for every tap.
+        if self.flip:
+            shown = cv2.flip(shown, 1)
         self.view.show_frame(shown)
-        self.count_lbl.setText(str(count))
+
+        # WHAT THE BIG NUMBER IS, when the prescription took more than one pour.
+        #
+        #     total = what is already in the bottle + what is on the tray right now
+        #
+        # and the second term is dropped while `clearing`, which is the whole of the
+        # safety. Between taking a round and the tray being seen empty, those tablets are
+        # counted in BOTH terms -- the list remembers them and the camera can still see
+        # them -- so adding the two would report a tray of 35 as 70. Dropping the live term
+        # until the tray has been observed empty means the machine has watched the tablets
+        # leave before it agrees to count anything else, and a pour cannot be counted twice
+        # without physically pouring it twice.
+        now = time.perf_counter()
+        if count != self._steady_n:
+            self._steady_n = count
+            self._steady_at = now
+        steady = now - self._steady_at
+        if self.clearing and count == 0 and steady >= CLEAR_S:
+            self.clearing = False
+            if self.note == CLEAR_NOTE:
+                self.note = "ถาดว่างแล้ว  เทรอบต่อไปได้"
+        live = 0 if self.clearing else count
+        total = self.banked() + live
+        self.count_lbl.setText(str(total))
+
+        if self.clearing:
+            strip = (f"เก็บแล้ว {len(self.rounds)} รอบ  รวม {self.banked()} เม็ด"
+                     f"   ·   รอกวาดถาด")
+        elif self.rounds:
+            strip = (f"เก็บแล้ว {len(self.rounds)} รอบ  รวม {self.banked()}"
+                     f"   +   ในถาด {live}")
+        else:
+            strip = ""
+        if strip != self.rounds_lbl.text():
+            self.rounds_lbl.setText(strip)
+            self.rounds_lbl.setVisible(bool(strip))
+        round_text = f"เก็บรอบที่ {len(self.rounds) + 1}"
+        if round_text != self.round_btn.text():
+            self.round_btn.setText(round_text)
 
         # The verdict is words as well as colour. A dispensary is not the place to make
         # somebody read a hue: colour-blindness aside, a glance across a room resolves a
         # word faster than a shade of orange.
         if self.target:
-            diff = count - self.target
+            diff = total - self.target
             if diff == 0:
                 text, colour, pair = "ครบตามจำนวน", T.GREEN_700, T.BADGE_OK
             elif diff > 0:
@@ -1110,10 +1571,59 @@ class Window(QWidget):
             block = f"ภาพจากกล้องหยุด {stale:.0f} วินาที  ตรวจสายกล้องหรือโปรแกรมที่ใช้กล้องอยู่"
         elif getattr(self.infer, "error", ""):
             block = f"โมเดลผิดพลาด  {self.infer.error}"
-        elif self.target and count > self.target:
+        elif self.target and total > self.target:
             block = OVER_NOTE
         else:
             block = ""
+
+        # WHY A ROUND MAY NOT BE TAKEN, in the same order and for the same reason: the
+        # button is drawn dead AND _take_round refuses, because a disabled button is a
+        # picture of a rule and this one is load-bearing. The two transient reasons are the
+        # ones worth naming -- an empty tray and a figure still moving both look like the
+        # app ignoring a press, and an operator who thinks a control is broken presses it
+        # harder rather than waiting the half second it is asking for.
+        if block:
+            round_block = block
+        elif self.clearing:
+            round_block = CLEAR_NOTE
+        elif count <= 0:
+            round_block = "ถาดว่าง  ยังไม่มีอะไรให้เก็บ"
+        elif steady < SETTLE_S:
+            round_block = "ตัวเลขยังไม่นิ่ง  รอสักครู่"
+        else:
+            round_block = ""
+        self._round_block = round_block
+        self._can_round = not round_block
+        self.round_btn.setEnabled(self._can_round)
+        armed_reset = time.time() - self._reset_armed_at < CONFIRM_S
+        reset_text = "กดอีกครั้ง" if armed_reset else "นับใหม่"
+        if reset_text != self.reset_btn.text():
+            self.reset_btn.setText(reset_text)
+        # Live while there is a total to discard, INCLUDING mid-sweep: the tray that has
+        # just been banked is exactly the moment somebody notices it was the wrong tray.
+        self.reset_btn.setEnabled(bool(self.rounds or self.clearing))
+
+        # THE SAVE BUTTON SAYS WHAT IT IS ABOUT TO FILE, and a short count is filed under
+        # protest. Saving under the target stays possible on purpose -- the stock runs out,
+        # and a screen that refuses to record 47 of 60 does not create the missing thirteen,
+        # it just sends the number onto a scrap of paper where nothing can audit it. What
+        # was wrong was that it looked identical to filing a complete one: same green, same
+        # word, and the operator learns the gesture rather than the state. So the button
+        # keeps the job and loses the disguise.
+        if self.target and total < self.target:
+            save_text, save_kind = f"บันทึกว่าไม่ครบ (ขาด {self.target - total})", "warn"
+        else:
+            save_text, save_kind = "บันทึกผล", "primary"
+        if save_text != self.save_btn.text():
+            self.save_btn.setText(save_text)
+        if save_kind != self._save_kind:
+            self._save_kind = save_kind
+            self.save_btn.setObjectName(save_kind)
+            # setObjectName alone changes nothing that is already drawn: Qt matched the
+            # #primary rule when the widget was polished and does not go looking again.
+            self.save_btn.style().unpolish(self.save_btn)
+            self.save_btn.style().polish(self.save_btn)
+
         if block != self._block:
             was_broken = self._block not in ("", OVER_NOTE)
             self._block = block
@@ -1130,7 +1640,7 @@ class Window(QWidget):
         # bar would say "done" while the words beside it say there is one too many.
         if self.target:
             self.progress.setVisible(True)
-            self.progress.setValue(min(100, int(count * 100 / self.target)))
+            self.progress.setValue(min(100, int(total * 100 / self.target)))
         else:
             self.progress.setVisible(False)
         if colour != self._bar_colour:

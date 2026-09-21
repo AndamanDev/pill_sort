@@ -101,6 +101,16 @@ def button(img, text, rect, txt, px, kind="ghost", enabled=True):
         fill = GREEN_700 if enabled else LINE
         ink = SURFACE if enabled else INK_MUTED
         rounded(img, rect, 18, fill, -1)
+    elif kind == "warn":
+        # THE PRIMARY BUTTON IN A DIFFERENT COAT, for a save that files a SHORT count.
+        # Not a second button elsewhere on the panel: there is one save here, and giving it
+        # a rival would ask the operator to choose between two controls that both write a
+        # record -- the one decision they should not have to get right at speed. Same
+        # control, wearing what it is about to do. Orange and not red, because a short
+        # dispense is a legitimate act and red is kept for the machine having stopped.
+        fill = WARN if enabled else LINE
+        ink = SURFACE if enabled else INK_MUTED
+        rounded(img, rect, 18, fill, -1)
     elif kind == "danger":
         rounded(img, rect, 18, SURFACE, -1)
         rounded(img, rect, 18, DANGER if enabled else LINE, 2)

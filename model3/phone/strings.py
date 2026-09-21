@@ -59,7 +59,6 @@ COUNTING = [
     "ล้างกรอบ",
     "บันทึกผล",
     "ดูรายการที่บันทึก",
-    "ลากนิ้วคลุมพื้นที่ถาด",
     "เกินจำนวนที่ต้องการ",
     "นำออกก่อนจึงบันทึกได้",
     "ภาพจากกล้องหยุด",
@@ -71,7 +70,49 @@ COUNTING = [
     "บันทึกแล้ว",
     "กำหนดกรอบแล้ว",
     "กรอบเล็กเกินไป",
+    # Placing the counting region a corner at a time. The tray is a quadrilateral whenever
+    # the lens is not square to the bench, which is always, so the rubber band and its
+    # "ลากนิ้วคลุมพื้นที่ถาด" went together.
+    "แตะมุมถาดทีละมุม",
+    "อีก",
+    "จุด",
+    "ถอยจุด",
+    "พลิกภาพ",
+    "พลิกภาพซ้าย-ขวาแล้ว",
+    "เลิกพลิกภาพแล้ว",
+    "มุมนี้แคบเกินไป",
+    "แตะให้ห่างจากมุมอื่น",
     "โมเดลผิดพลาด",
+    # Multi-round counting. A tray holds about sixty tablets before they start lying on
+    # one another, so a prescription for a hundred is physically two pours, and these are
+    # the words that let the screen say so. Every one of them has to be in this list or it
+    # ships as a hollow box -- which is the whole reason this file exists.
+    "เก็บรอบที่",
+    "นับใหม่",
+    "กดอีกครั้ง",
+    "จะทิ้งยอดสะสม",
+    "กดอีกครั้งเพื่อเริ่มนับใหม่",
+    "เริ่มนับใหม่",
+    "ทิ้งยอดสะสม",
+    "แล้ว",
+    "เก็บแล้ว",
+    "รอบ",
+    "รวม",
+    "ในถาด",
+    "รอกวาดถาด",
+    "กวาดเม็ดในถาดออกให้หมด",
+    "แล้วจึงเทรอบต่อไป",
+    "ถาดว่างแล้ว",
+    "เทรอบต่อไปได้",
+    "ถาดว่าง",
+    "ยังไม่มีอะไรให้เก็บ",
+    "ตัวเลขยังไม่นิ่ง",
+    "รอสักครู่",
+    "สะสมแล้ว",
+    "บันทึกว่าไม่ครบ",
+    "ยังเทค้างอยู่",
+    "ยอดสะสมจะถูกล้าง",
+    "แตะอีกครั้งเพื่อบันทึก",
 ]
 
 RECORDS = [

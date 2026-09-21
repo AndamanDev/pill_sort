@@ -314,25 +314,51 @@ def main():
     app._S["last_key"] = None
     app.frame(rgba, fw, fh, stride, 0, 0, 0, 0, 0)
 
-    # THE COUNTING FRAME OUTLIVES THE APP. Dragged through the screen's own touch path,
+    # THE COUNTING FRAME OUTLIVES THE APP. Tapped in through the screen's own touch path,
     # then read back by a second Screen on the same folder -- which is what the next
     # launch is, and what the phone had no answer for: every launch started with no
     # region and a count of the whole picture, on a bench whose tray has not moved.
-    from model3.phone.screen import PANE, Screen as Fresh
+    #
+    # FOUR CORNERS, AND THE LAST TWO GO IN THE WRONG ORDER ON PURPOSE. Tapped in that
+    # order they would make a bow tie, and quad() is what turns any four taps into a shape
+    # with no crossing edges; a test that only ever tapped them round the rim would never
+    # execute the line that matters.
+    from model3.phone.screen import pane_out, Screen as Fresh
 
     screen.page = "count"
     screen.arming = True
-    fx, fy, fw_, fh_ = PANE
-    for phase, tx, ty in (("down", fx + 100, fy + 90),
-                          ("move", fx + fw_ - 120, fy + fh_ - 110),
-                          ("up", fx + fw_ - 120, fy + fh_ - 110)):
-        screen.touch(phase, tx, ty, (480, 640, 3))
+    screen.pending = []
+    # pane_out(), not PANE. Android sends touches in the coordinates of the bitmap it was
+    # given, which is the SCALED screen; PANE is the design-size rectangle, half as big
+    # again. The earlier version of this test passed design coordinates and still got a
+    # region, because the drag it was testing clamped whatever it was handed back into the
+    # frame -- so the test passed while aiming a third of the way off the tray.
+    fx, fy, fw_, fh_ = pane_out()
+    corners = [(fx + 100, fy + 90), (fx + fw_ - 120, fy + fh_ - 110),
+               (fx + fw_ - 120, fy + 90), (fx + 100, fy + fh_ - 110)]
+    for tx, ty in corners:
+        screen.touch("down", tx, ty, (480, 640, 3))
+        screen.touch("up", tx, ty, (480, 640, 3))
     kept = Fresh(ASSETS, records)
     kept.compose(cv2.resize(frames[0], (640, 480)), np.zeros((0, 4), np.float32), 0, 0.0)
-    print(f"  กรอบนับ: ลากแล้วได้ {screen.roi is not None}   "
-          f"เปิดใหม่ยังอยู่ {kept.roi == screen.roi}")
-    assert screen.roi, "ลากแล้วไม่ได้กรอบ"
+    print(f"  กรอบนับ: แตะ 4 มุมแล้วได้ {screen.roi is not None}   "
+          f"{screen.roi}   เปิดใหม่ยังอยู่ {kept.roi == screen.roi}")
+    assert screen.roi, "แตะครบสี่มุมแล้วไม่ได้กรอบ"
+    assert not screen.arming, "มุมที่สี่แล้วยังไม่ปิดกรอบ"
+    assert len(screen.roi) == 4 and len(set(map(tuple, screen.roi))) == 4, "มุมซ้ำกัน"
     assert kept.roi == screen.roi, "เปิดโปรแกรมใหม่แล้วกรอบนับหาย"
+    # THE BOW TIE THE TAP ORDER WOULD OTHERWISE HAVE MADE. Four corners of a rectangle
+    # joined 1-2-3-4 in the order tapped above cross in the middle and enclose ZERO area;
+    # joined round the rim they enclose the whole rectangle. So the shoelace area of what
+    # was saved, against the area of its own bounding box, is the test -- and it is the
+    # difference between counting the tray and counting nothing.
+    r = screen.roi
+    area = abs(sum(r[i][0] * r[(i + 1) % 4][1] - r[(i + 1) % 4][0] * r[i][1]
+                   for i in range(4))) / 2.0
+    box = ((max(q[0] for q in r) - min(q[0] for q in r))
+           * (max(q[1] for q in r) - min(q[1] for q in r)))
+    print(f"  กรอบนับ: พื้นที่ {area:.0f} จาก {box} (โบว์ไทจะได้ 0)")
+    assert area > 0.9 * box, "มุมเรียงไขว้กัน กรอบเป็นโบว์ไท"
 
     print(f"\nรันครบ {ok} เฟรม ไม่มี exception")
     print("records:", records)

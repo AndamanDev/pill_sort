@@ -55,7 +55,11 @@ COLUMNS = ("", "เวลา", "นับได้", "ต้องการ", "�
 #: The CSV. Wider than the list on purpose: this one leaves the building, so the settings
 #: that produced the count travel with it, and the file names let any row be traced back to
 #: the JSON and the frame it came from.
-CSV_FIELDS = ("time", "count", "target", "difference", "detections",
+#: `rounds` sits next to `count` rather than at the end because that is where it is read:
+#: a 60 that was poured 35 and 25 and a 60 that came off one tray are the same dispense and
+#: a different piece of evidence, and the column that says which must be beside the number
+#: it qualifies, not out past the model settings where nobody scrolls.
+CSV_FIELDS = ("time", "count", "rounds", "target", "difference", "short", "detections",
               "conf", "iou", "imgsz", "model_ms", "roi", "json", "image")
 
 THUMB = QSize(104, 62)      # the row's picture; the row is sized from it
@@ -85,6 +89,13 @@ def load_records(folder=RECORDS):
         image = os.path.splitext(path)[0] + ".jpg"
         rec["json"] = path
         rec["image"] = image if os.path.isfile(image) else ""
+        # The per-pour frames, resolved here so that everything which acts on a record --
+        # and deleting is the one that matters -- sees them as part of it. Left unresolved
+        # they would survive the record they belong to and sit in the folder for ever,
+        # unreachable from the list because nothing but a count_*.json puts a row in it.
+        rec["round_paths"] = [
+            q for q in (os.path.join(folder, n) for n in (rec.get("round_images") or []))
+            if os.path.isfile(q)]
         rec["stamp"] = os.path.basename(path)[6:-5]     # count_<stamp>.json
         rows.append(rec)
     rows.sort(key=lambda r: r.get("stamp", ""), reverse=True)
@@ -129,6 +140,18 @@ def difference_text(rec) -> str:
     return verdict(rec)[1]
 
 
+def rounds_text(rec) -> str:
+    """"35 + 25" for a dispense poured twice, and "" for one poured once.
+
+    Records written before multi-round counting existed have no `rounds` key at all, and
+    records written after it exists but used once carry a single-element list. Both mean
+    the same thing -- one tray, nothing to explain -- so both come back empty here, and no
+    reader of these files has to know which era a record is from.
+    """
+    rounds = rec.get("rounds") or []
+    return " + ".join(str(int(n)) for n in rounds) if len(rounds) > 1 else ""
+
+
 #: Thai month abbreviations, indexed by month number.
 MONTHS = ("", "ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.",
           "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค.")
@@ -159,10 +182,18 @@ def export_csv(rows, path) -> int:
             writer.writerow({
                 "time": rec.get("time", ""),
                 "count": rec.get("count", ""),
+                # Blank for a single pour, not "60": a cell that repeats the count adds
+                # nothing and makes a column of them look like something worth reading.
+                "rounds": rounds_text(rec),
                 "target": rec.get("target", ""),
                 # An empty cell, not the word "None": a spreadsheet reads a blank as "no
                 # target was set" and reads None as text that breaks the column's sums.
                 "difference": "" if rec.get("difference") is None else rec["difference"],
+                # A column a spreadsheet can FILTER on. "show me every short dispense this
+                # month" is the question these files exist to answer, and answering it off
+                # `difference` means sorting a signed column and reading where it turns
+                # negative -- which is a thing to get right rather than a thing to click.
+                "short": "TRUE" if rec.get("short") else "",
                 "detections": len(rec.get("boxes") or []),
                 "conf": rec.get("conf", ""), "iou": rec.get("iou", ""),
                 "imgsz": rec.get("imgsz", ""), "model_ms": rec.get("model_ms", ""),
@@ -267,6 +298,7 @@ def delete_records(rows):
     deleted, failed = 0, []
     for rec in rows:
         paths = [p for p in (rec.get("image"), rec.get("json")) if p and os.path.isfile(p)]
+        paths.extend(rec.get("round_paths") or [])
         recycle(paths)
         left = [p for p in paths if os.path.isfile(p)]
         if left:
@@ -1040,10 +1072,19 @@ class RecordsDialog(QDialog):
         _recolour(self.facts["result"], BADGES[kind][1])
         self.facts["ms"].setText(f"{rec.get('model_ms', '—')}")
         roi = "เฉพาะในกรอบ" if rec.get("roi") else "นับทั้งภาพ"
+        # THE BREAKDOWN GOES FIRST AND ON ITS OWN LINE. For a two-pour record the count in
+        # the box above is the only number here the picture cannot be used to check -- the
+        # frame shown is the LAST tray, so a viewer who reads 60 and counts 25 tablets has
+        # found the app lying unless this line is there to say it did not.
+        rounds = rounds_text(rec)
+        breakdown = ((f"เทเป็น {len(rec.get('rounds') or [])} รอบ: {rounds} = "
+                     f"{int(rec.get('count') or 0)} เม็ด   "
+                     f"(ภาพที่เห็นคือรอบสุดท้าย)\n") if rounds else "")
         self.settings_lbl.setText(
+            f"{breakdown}"
             f"conf {rec.get('conf', '-')}   iou {rec.get('iou', '-')}   "
             f"imgsz {rec.get('imgsz', '-')}   {roi}   "
-            f"เจอทั้งหมด {len(rec.get('boxes') or [])} เม็ด")
+            f"เจอในภาพนี้ {len(rec.get('boxes') or [])} เม็ด")
 
     # ------------------------------------------------------------------------- actions
     def _reload(self):

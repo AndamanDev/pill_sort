@@ -29,6 +29,14 @@ enabled = True
 #: (frequency Hz, milliseconds) pairs, played in order.
 SAVED = ((1046, 70), (1568, 90))            # two rising notes: "filed"
 PROBLEM = ((392, 160), (0, 60), (392, 220))  # low, twice, unhurried: "stopped"
+#: One note, flat, between the two above: "that pour is on the total".
+#:
+#: IT HAD TO BE ITS OWN SOUND. Taking a round was sounding SAVED, which tells the operator
+#: the record is written when it is not -- and the moment they hear it is the moment they
+#: tip the tray into a bottle, so a mistaken "filed" is acted on irreversibly before anybody
+#: looks at the screen. One note against two is the same rhythm difference that separates
+#: SAVED from PROBLEM, and it reads as the smaller event that it is.
+ROUND = ((1318, 80),)
 
 
 def _play(notes):
@@ -53,6 +61,10 @@ def play(notes) -> None:
 
 def saved() -> None:
     play(SAVED)
+
+
+def round_taken() -> None:
+    play(ROUND)
 
 
 def problem() -> None:

@@ -21,7 +21,11 @@ import json
 import os
 import time
 
-CSV_FIELDS = ("time", "count", "target", "difference", "detections",
+#: `rounds` and `short` sit beside `count` rather than at the end, and the desktop's
+#: app/records_view.py carries the same two in the same order: a CSV off a phone and one
+#: off the bench have to open in the same spreadsheet with the same columns, which is the
+#: promise this module's docstring makes.
+CSV_FIELDS = ("time", "count", "rounds", "target", "difference", "short", "detections",
               "conf", "iou", "imgsz", "model_ms", "roi", "json", "image")
 
 
@@ -37,6 +41,38 @@ def free_stamp(folder) -> str:
 
 def roi_path(folder):
     return os.path.join(folder, "roi.json")
+
+
+def view_path(folder):
+    return os.path.join(folder, "view.json")
+
+
+def load_flip(folder) -> bool:
+    """Whether this camera's picture is mirrored. A FILE OF ITS OWN, beside the region.
+
+    ON UNTIL SOMEBODY TURNS IT OFF. A webcam and a phone camera are both built to be
+    pointed at a face, and both hand over a mirror image because that is what a face
+    expects to see; a tray does not. Measured on this bench, both screens showed the tray
+    the wrong way round, so the setting that matches the hardware is the one that should
+    need no press -- and the press is there for a camera that does not mirror.
+
+    Not a field in roi.json, which is where it nearly went. Clearing the region deletes
+    that file, and somebody who redraws the tray has not asked for the picture to turn
+    round -- they would find it mirrored again with nothing on screen to say why. The two
+    settings have different lifetimes, so they get different files.
+    """
+    try:
+        with open(view_path(folder), encoding="utf-8") as fh:
+            return bool(json.load(fh).get("flip", True))
+    except Exception:                                               # noqa: BLE001
+        return True
+
+
+def save_flip(folder, flip):
+    os.makedirs(folder, exist_ok=True)
+    with open(view_path(folder), "w", encoding="utf-8") as fh:
+        json.dump({"flip": bool(flip), "saved": time.strftime("%Y-%m-%d %H:%M")}, fh,
+                  ensure_ascii=False, indent=2)
 
 
 def load_roi(folder, size):
@@ -84,9 +120,25 @@ def save_roi(folder, size, pts):
                   ensure_ascii=False, indent=2)
 
 
+def rounds_text(rec) -> str:
+    """"35 + 25" for a dispense poured twice, "" for one poured once.
+
+    A record written before multi-round counting has no `rounds` key; one written after it
+    but poured once has a single-element list. Both mean one tray and nothing to explain,
+    so both come back empty and no reader has to know which era a file is from.
+    """
+    rounds = rec.get("rounds") or []
+    return " + ".join(str(int(n)) for n in rounds) if len(rounds) > 1 else ""
+
+
 def save(folder, frame, boxes, confs, count, target, ms, roi, conf, iou, imgsz,
-         write_jpeg=None):
+         write_jpeg=None, rounds=None, round_frames=None):
     """Write one record. Returns its stamp.
+
+    `count` IS THE TOTAL across every pour, and `rounds` is how it was reached. Keeping the
+    total in the field every existing reader already asks is what lets the bench's records
+    window, the CSV and a spreadsheet opened next year go on working without being taught
+    that a newer field exists: `rounds` adds detail, it never corrects.
 
     `write_jpeg` is how the frame is encoded, injected because the phone has cv2 and the
     tests would rather not: the caller passes cv2.imwrite and a test passes a stub.
@@ -98,6 +150,11 @@ def save(folder, frame, boxes, confs, count, target, ms, roi, conf, iou, imgsz,
         "count": int(count),
         "target": int(target),
         "difference": int(count) - int(target) if target else None,
+        "rounds": [int(n) for n in (rounds or [int(count)])],
+        # Deliberately short, and recorded as such. `difference` carries the same fact, but
+        # a reader with a spreadsheet has to know to do the subtraction before a short
+        # dispense becomes visible to them; a flag is visible without being looked for.
+        "short": bool(target and int(count) < int(target)),
         "conf": conf, "iou": iou, "imgsz": imgsz,
         "roi": [[int(x), int(y)] for x, y in roi] if roi else None,
         "model_ms": round(float(ms), 1),
@@ -105,6 +162,19 @@ def save(folder, frame, boxes, confs, count, target, ms, roi, conf, iou, imgsz,
         "confidences": [round(float(c), 3) for c in confs],
         "source": "phone",
     }
+    # ONE FRAME PER POUR. count_<stamp>.jpg stays the LAST tray, because that is the one
+    # `boxes` belongs to and a record whose picture and boxes disagree is worse than one
+    # with no picture. The earlier pours go beside it numbered, so a total of 60 that
+    # nobody can re-count on a tray can still be re-counted on two.
+    shots = []
+    for i, shot in enumerate(round_frames or [], start=1):
+        if shot is None or write_jpeg is None:
+            continue
+        name = f"count_{stamp}_r{i}.jpg"
+        write_jpeg(os.path.join(folder, name), shot)
+        shots.append(name)
+    if shots:
+        record["round_images"] = shots
     with open(os.path.join(folder, f"count_{stamp}.json"), "w", encoding="utf-8") as fh:
         json.dump(record, fh, ensure_ascii=False, indent=2)
     if frame is not None and write_jpeg is not None:
@@ -125,6 +195,13 @@ def load(folder):
         rec["json"] = path
         rec["image"] = image if os.path.isfile(image) else ""
         rec["stamp"] = os.path.basename(path)[6:-5]
+        # The per-pour frames, resolved here so everything acting on a record -- and
+        # deleting is the one that matters -- sees them as part of it. Left unresolved they
+        # would outlive the record they belong to and sit in the folder for ever, out of
+        # reach because only a count_*.json puts a row in this list.
+        rec["round_paths"] = [
+            q for q in (os.path.join(folder, n) for n in (rec.get("round_images") or []))
+            if os.path.isfile(q)]
         rows.append(rec)
     rows.sort(key=lambda r: r.get("stamp", ""), reverse=True)
     return rows
@@ -163,8 +240,10 @@ def export_csv(rows, path) -> int:
             writer.writerow({
                 "time": rec.get("time", ""),
                 "count": rec.get("count", ""),
+                "rounds": rounds_text(rec),
                 "target": rec.get("target", ""),
                 "difference": "" if rec.get("difference") is None else rec["difference"],
+                "short": "TRUE" if rec.get("short") else "",
                 "detections": len(rec.get("boxes") or []),
                 "conf": rec.get("conf", ""), "iou": rec.get("iou", ""),
                 "imgsz": rec.get("imgsz", ""), "model_ms": rec.get("model_ms", ""),
@@ -186,6 +265,7 @@ def delete(rows):
     gone, failed = 0, []
     for rec in rows:
         paths = [p for p in (rec.get("image"), rec.get("json")) if p and os.path.isfile(p)]
+        paths.extend(rec.get("round_paths") or [])
         stuck = False
         for path in paths:
             try:
