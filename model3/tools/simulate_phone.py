@@ -131,6 +131,11 @@ def main():
     # The hole has to be transparent, or the preview surface behind it is invisible.
     # Forced, because a frame that changes nothing is deliberately not drawn at all.
     screen = app._S["screen"]
+    # THE SETTINGS LINE IS PART OF THE RECORD, so it is checked like one. This is the only
+    # place the bridge, the engine and the screen are wired together outside the phone.
+    assert screen.imgsz == "x".join(str(v) for v in app._S["engine"].hw), (
+        f"หน้าจอบอกขนาดโมเดล {screen.imgsz} แต่โมเดลจริงคือ {app._S['engine'].hw}")
+    assert info["model"] == screen.imgsz, "ready: กับแถบล่างบอกขนาดโมเดลไม่ตรงกัน"
     app._S["last_key"] = None
     rgba, fw, fh, stride = camera_bytes(cv2.resize(frames[0], (640, 480)))
     last = app.frame(rgba, fw, fh, stride, 0, 0, 0, 0, 0)

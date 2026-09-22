@@ -109,7 +109,17 @@ def start(assets_dir: str, records_dir: str, ort,
         except Exception:                                           # noqa: BLE001
             hw = None
     _S["engine"] = Engine(kotlin=_Forward(ort), conf=0.45, iou=0.4, hw=hw)
-    _S["screen"] = Screen(assets_dir, records_dir)
+    # AND THE SCREEN IS TOLD THE SAME SHAPE, because it writes it into every record.
+    #
+    # It said 640. Nothing ran at 640: the export is 320x416 and the engine takes the
+    # shape off the graph -- 640 was a default on Screen's constructor that no caller had
+    # ever overridden, shown in the footer and saved in the settings line of every count
+    # filed on this phone. A record that misstates what produced it is worse than one that
+    # says nothing, because the next person to ask why a tray came up short will believe
+    # it. The bench's own 640 is true of the bench; this is the phone's answer to the
+    # same question.
+    _S["screen"] = Screen(assets_dir, records_dir,
+                          imgsz="x".join(str(v) for v in _S["engine"].hw))
     _S["cv2"] = cv2
     _S["frame"] = None
     _S["boxes"] = np.zeros((0, 4), np.float32)
