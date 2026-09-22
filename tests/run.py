@@ -35,6 +35,17 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
+# PRINTING A FAILURE MUST NOT ITSELF FAIL, and this runner's first real failure was its
+# own: the console here is cp874, the suites print Thai, and a byte that did not survive
+# whatever encoding it went through arrives as U+FFFD, which cp874 cannot encode either.
+# The traceback replaced the one thing anybody runs this for -- the name of the suite that
+# broke -- with a stack trace about codecs.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")
+    except (AttributeError, ValueError):    # not a real console, or already wrapped
+        pass
+
 #: Long enough for the slowest suite (test_align builds a real ONNX session and pushes
 #: frames through it), short enough that a wedged modal is noticed within a coffee.
 TIMEOUT = 420
