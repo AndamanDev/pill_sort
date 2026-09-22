@@ -256,7 +256,38 @@ copy {
     // pillcount-det-v3-480x640.onnx. Nothing else needs changing: OrtEngine reads the
     // shape off the graph and hands it to the letterbox, so the export is the only thing
     // that knows its own size.
-    from("${projectRoot}/weights") { include "v3-320x416.onnx" }
+    // THE RETRY, AND WHAT IS DIFFERENT THIS TIME. Both exports ship. MainActivity opens
+    // the int8 one, writes its name to disk BEFORE the first real frame, and rubs it out
+    // when a frame comes back; finding it still there on the next launch means the
+    // process died holding it, and that export is never opened again on this board. The
+    // float32 file below is what it falls back to -- the same graph that has been running
+    // all along. The worst this can cost is one crash and a restart, which is what it
+    // cost last time without the app being able to say why or come back from it.
+    //
+    // AND THE ANSWER, measured on the board over adb rather than guessed at from a desk:
+    //
+    //   export            provider   race     in-app     what the provider did
+    //   float32 320x416   xnnpack       -     545 ms     ran it
+    //   int8 per-channel  nnapi         -          -     REFUSED to build the graph
+    //   int8 per-channel  xnnpack       -          -     REFUSED to build the graph
+    //   int8 per-channel  cpu       169 ms    366 ms     ran it, and survived a real frame
+    //
+    // It did not crash. What killed the board last time was almost certainly NNAPI being
+    // handed a quantised graph, and this export never gets that far: per-channel QDQ is
+    // not something NNAPI or XNNPACK will take, so both decline at build time -- loudly,
+    // in Kotlin, where a refusal is caught and logged and the race moves on. The plain CPU
+    // provider takes it and is 3.2x quicker on the same blob than the float32 graph was on
+    // XNNPACK's hand-written kernels.
+    //
+    // WHAT THE REMAINING 197 ms IS. 366 in the app against 169 in the session: the rest is
+    // Python -- letterbox, blobFromImage, and the numpy decode of the output tensor. With
+    // the model this much faster that overhead is now the bigger half of every count, and
+    // the next thing worth attacking.
+    from("${projectRoot}/weights") {
+        include "v3-320x416.onnx"
+        include "v3-320x416-int8-pc.onnx"
+    }
     into "${buildDir}/androidAssets/model"
-    rename { "pillcount-det-v3.onnx" }
+    rename { name -> if (name.contains("int8")) "pillcount-det-v3-int8.onnx"
+                     else "pillcount-det-v3.onnx" }
 }

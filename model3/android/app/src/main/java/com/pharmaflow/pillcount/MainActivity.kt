@@ -183,6 +183,10 @@ class MainActivity : ComponentActivity() {
     private var bridge: PyObject? = null
     private var engine: OrtEngine? = null
 
+    /** The export whose breadcrumb is still on disk, until a real frame rubs it out. */
+    @Volatile
+    private var modelPending: String? = null
+
     private var canvasW = 0
     private var canvasH = 0
 
@@ -287,6 +291,12 @@ class MainActivity : ComponentActivity() {
      * ONNX Runtime session is another second on top. Doing it here rather than lazily
      * in the analyzer means the camera does not open onto a frozen screen.
      */
+    /** The name both the provider race and the crash ban file this export under. */
+    private fun modelKeyOf(bytes: ByteArray): String {
+        val crc = java.util.zip.CRC32().apply { update(bytes) }.value
+        return "$MODEL_KEY_SALT-$crc-${bytes.size}"
+    }
+
     private fun boot() {
         try {
             // The version AND when this copy was installed. Two builds of 0.1.0 are the
@@ -297,7 +307,34 @@ class MainActivity : ComponentActivity() {
             val artDir = Art.unpack(this, version)
             step(20, "เตรียมไฟล์หน้าจอ")
 
-            val modelBytes = assets.open("model/pillcount-det-v3.onnx").use { it.readBytes() }
+            val prefs = getSharedPreferences(ENGINE_PREFS, MODE_PRIVATE)
+            var modelBytes = assets.open(MODEL_FAST).use { it.readBytes() }
+            var modelKey = modelKeyOf(modelBytes)
+
+            // A BREADCRUMB FOR THE EXPORT, for the reason OrtEngine keeps one for the
+            // provider: what this guards against kills the process, so it cannot be
+            // caught, only found afterwards. Shipped as int8 once before, this app closed
+            // the moment the loading screen ended and left nothing behind at all -- no
+            // dialog, no log line, no way to tell a bad graph from a bad driver.
+            //
+            // KEYED BY THE BYTES, not by the file name. A rebuilt int8 export is a
+            // different graph and has earned its own chance; the one that actually died
+            // stays dead. It is the same key the provider race files its answer under, so
+            // both memories move together when the export changes.
+            val pending = prefs.getString(KEY_MODEL_PENDING, null)
+            if (pending != null) {
+                Log.w(TAG, "the export $pending did not survive the last run")
+                prefs.edit().remove(KEY_MODEL_PENDING)
+                    .putBoolean("$KEY_MODEL_BAD-$pending", true).apply()
+            }
+            if (prefs.getBoolean("$KEY_MODEL_BAD-$modelKey", false)) {
+                modelBytes = assets.open(MODEL_SAFE).use { it.readBytes() }
+                modelKey = modelKeyOf(modelBytes)
+                Log.i(TAG, "float32 export: the quick one crashed this board before")
+            } else {
+                prefs.edit().putString(KEY_MODEL_PENDING, modelKey).apply()
+                modelPending = modelKey
+            }
             step(30, "วัดความเร็วโมเดล")
 
             // THE RACE IS REMEMBERED AGAINST THE MODEL, NOT AGAINST THE INSTALL.
@@ -318,11 +355,8 @@ class MainActivity : ComponentActivity() {
             // The one thing this does NOT notice is ONNX Runtime itself being upgraded,
             // which is a line in build.gradle and a thing somebody does on purpose. Bump
             // MODEL_KEY_SALT when that happens.
-            val crc = java.util.zip.CRC32().apply { update(modelBytes) }.value
-            val modelKey = "$MODEL_KEY_SALT-$crc-${modelBytes.size}"
             Log.i(TAG, "model key $modelKey")
-            val ort = OrtEngine(modelBytes,
-                                getSharedPreferences(ENGINE_PREFS, MODE_PRIVATE), modelKey)
+            val ort = OrtEngine(modelBytes, prefs, modelKey)
             engine = ort
             step(45, "โหลดโมเดลตรวจจับเม็ดยา")
 
@@ -507,6 +541,14 @@ class MainActivity : ComponentActivity() {
             // zeros before the camera is even open. Only here has the chosen provider been
             // handed real data and returned from it.
             engine?.healthy()
+            // AND THE EXPORT SURVIVED WITH IT. Same frame, same proof: the graph that has
+            // just returned real boxes is one this board can be trusted with.
+            modelPending?.let {
+                modelPending = null
+                getSharedPreferences(ENGINE_PREFS, MODE_PRIVATE).edit()
+                    .remove(KEY_MODEL_PENDING).apply()
+                Log.i(TAG, "export $it survived a real frame")
+            }
         } catch (t: Throwable) {
             Log.e(TAG, "frame failed", t)
             status("ประมวลผลภาพไม่สำเร็จ\n${t.javaClass.simpleName}: ${t.message}")
@@ -864,6 +906,18 @@ class MainActivity : ComponentActivity() {
 
         /** Bump when ONNX Runtime is upgraded: the race's answer is about it too. */
         const val MODEL_KEY_SALT = "ort1"
+
+        /** The quick export, opened first, and the one that has to prove itself. */
+        const val MODEL_FAST = "model/pillcount-det-v3-int8.onnx"
+
+        /** What it falls back to: the float32 graph this app has always run. */
+        const val MODEL_SAFE = "model/pillcount-det-v3.onnx"
+
+        /** Written before the first real frame, removed once one comes back. */
+        const val KEY_MODEL_PENDING = "model-pending"
+
+        /** Set when a pending export is found still on disk at the next launch. */
+        const val KEY_MODEL_BAD = "model-bad"
 
         /** How often the watchdog looks. Cheap: a subtraction, unless something is wrong. */
         const val WATCH_MS = 500L
