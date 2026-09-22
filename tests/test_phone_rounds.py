@@ -247,15 +247,25 @@ check("filed at once", n, 1)
 rec = json.load(open(max(glob.glob(os.path.join(RECORDS, "count_*.json")), key=os.path.getmtime), encoding="utf-8"))
 check("flagged short", (rec["count"], rec["short"], rec["rounds"]), (47, True, [47]))
 
-print("--- no target: nothing is short and nothing is guarded")
+print("--- no target: nothing is filed at all")
+# THIS USED TO FILE. A count with no prescription was saved with `short` false, on the
+# reasoning that nothing can fall short of nothing -- true, and beside the point: the
+# record carried a number with nothing to check it against, so the question anybody opens
+# it to ask has no answer in it. tests/test_no_target.py owns that rule now; what is
+# checked here is that the multi-round machinery honours it too, pours and all.
 sc.clear_rounds(); sc.target = 0
 tray(12); tap("round"); tray(0); tray(0)
-check("button green", sc._save_look(), "primary")
+check("the pour was banked", sc.rounds, [12])
+before = len(glob.glob(os.path.join(RECORDS, "count_*.json")))
 n = tap("save")
-check("filed at once", n, 1)
-rec = json.load(open(max(glob.glob(os.path.join(RECORDS, "count_*.json")), key=os.path.getmtime), encoding="utf-8"))
-check("not short", rec["short"], False)
+check("nothing filed", n, 0)
+check("and nothing landed on disk",
+      len(glob.glob(os.path.join(RECORDS, "count_*.json"))), before)
+check("the pour is still there, not thrown away", sc.rounds, [12])
+sc.clear_rounds()
 sc.target = 60
+rec = json.load(open(max(glob.glob(os.path.join(RECORDS, "count_*.json")),
+                        key=os.path.getmtime), encoding="utf-8"))
 
 # ------------------------------------------------------------------- records and CSV
 print("--- the records read back, both eras")
@@ -266,7 +276,7 @@ rows = rec_store.load(RECORDS)
 # four saves happen above: the two-pour 60, the guarded 35, the short 47 and the
 # untargeted 12. The "guard lapses" section arms twice and files nothing, which is
 # the point of it.
-check("every record listed", len(rows), 4)
+check("every record listed", len(rows), 3)
 check("per-pour frames resolved", sum(len(r["round_paths"]) for r in rows) > 0, True)
 csv_path = os.path.join(RECORDS, "out.csv")
 rec_store.export_csv(rows, csv_path)
@@ -279,7 +289,7 @@ sc.clear_rounds()
 sc.rounds = [35]
 sc.round_frames = [FRAME.copy()]
 sc.clearing = False
-out = os.path.join(HERE, "phone_rounds.png")
+out = os.path.join(tempfile.gettempdir(), "phone_rounds.png")
 img = paint(25)
 sc._steady_at -= 1.0
 img = paint(25)

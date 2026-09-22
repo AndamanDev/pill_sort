@@ -83,6 +83,8 @@ BANKED_OVER_NOTE = ("เก็บไปแล้ว {n} เม็ด  เกิ�
 NO_ROI_NOTE = "ยังไม่ได้กำหนดกรอบนับ  กดกำหนดกรอบนับก่อน"
 #: Said when somebody reaches the save with an empty tray and nothing banked.
 NOTHING_NOTE = "ยังไม่มีเม็ดยาให้บันทึก  วางยาบนถาดก่อน"
+#: Said when somebody reaches the save without having asked for a number.
+NO_TARGET_NOTE = "ยังไม่ได้กำหนดจำนวนที่ต้องการ  กำหนดก่อนจึงบันทึกได้"
 
 #: Said while a round has been taken but the tray it was taken from is still full.
 CLEAR_NOTE = "กวาดเม็ดในถาดออกให้หมด  แล้วจึงเทรอบต่อไป"
@@ -1468,6 +1470,9 @@ class Window(QWidget):
         if self._block:
             self.note = self._block
             return
+        if not self.target:
+            self.note = NO_TARGET_NOTE
+            return
         frame, (boxes, confs, count, ms) = self.infer.snapshot()
         # THE SAME ARITHMETIC THE SCREEN DID, not the live count on its own. A save that
         # filed the tray while the screen showed the total would put 25 in the record for a
@@ -1908,7 +1913,13 @@ class Window(QWidget):
         # has no message, because the footer is already saying how many corners are left,
         # which is better advice than a refusal could give -- so nothing above would ever
         # notice it going on and off.
-        self.save_btn.setEnabled(not self._block and not self.arming and total > 0)
+        # AND A NUMBER HAS TO HAVE BEEN ASKED FOR. A count with no target is a count
+        # nobody can check: the record carries 8 tablets and nothing to compare them
+        # against, so the one question anybody opens it to ask -- was this dispensed
+        # correctly -- has no answer in it, and never will. The verdict badge has been
+        # saying "ยังไม่กำหนดจำนวน" in that state all along; now the save agrees with it.
+        self.save_btn.setEnabled(not self._block and not self.arming and total > 0
+                                 and bool(self.target))
         recolour(self.count_lbl, colour if self.target else T.GREEN_700)
 
         # The bar is coloured with the verdict, not with the fill: at 61 of 60 a full green

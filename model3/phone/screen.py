@@ -1001,7 +1001,8 @@ class Screen:
         self.hits.append(("save", ui.button(
             img, self.text, (L, 872, 708, 92), words, px,
             "warn" if armed or self._save_look() == "warn" else "primary",
-            enabled=not self.blocked and not self.arming and self.live_total() > 0)))
+            enabled=not self.blocked and not self.arming and self.live_total() > 0
+                    and bool(self.target))))
 
     def _live_count(self, img, frame, boxes, count, ms, stale):
         """The number, the verdict, the bar and the video overlay: redrawn every frame."""
@@ -2004,6 +2005,10 @@ class Screen:
                 self._roi_prompt()          # say what is still needed, not a refusal
             elif self.blocked:
                 self.say(self.blocked)
+            elif not self.target:
+                # The badge above has been saying ยังไม่กำหนดจำนวน the whole time; this is
+                # the same fact, said where the press happened.
+                self.say("ยังไม่กำหนดจำนวน กำหนดจำนวนก่อนจึงบันทึกได้")
             elif self.live_total() <= 0:
                 # A DEAD BUTTON STILL REPORTS ITS TAP. ui.button draws it dead; the hit is
                 # registered either way, which is what lets every other refusal on this

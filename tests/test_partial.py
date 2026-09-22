@@ -131,14 +131,17 @@ rec = json.load(open(max(glob.glob(os.path.join(RECORDS,"count_*.json")), key=os
 check("filed", (rec["count"], rec["rounds"], rec["short"]), (35, [35], True))
 check("rounds cleared", win.rounds, [])
 
-print("--- no target set: nothing is short, nothing is asked")
+print("--- no target set: nothing is filed, so nothing is asked either")
+# It used to file, with `short` false. See tests/test_no_target.py for why it no longer
+# does; what matters here is that the question about a short save is not raised for a
+# save that is not going to happen.
 win._set_target(0); asked.clear()
 tray(12); win._take_round(); win._tick(); tray(0); tray(0)
-check("button green", win.save_btn.objectName(), "primary")
+before = len(glob.glob(os.path.join(RECORDS, "count_*.json")))
 win._save()
 check("no question", asked, [])
-rec = json.load(open(max(glob.glob(os.path.join(RECORDS,"count_*.json")), key=os.path.getmtime), encoding="utf-8"))
-check("short is false", rec["short"], False)
+check("and nothing filed", len(glob.glob(os.path.join(RECORDS, "count_*.json"))), before)
+check("the pour survives", win.rounds, [12])
 
 print("--- the real dialog builds, with the safe answer as the default")
 # CLEARED FIRST, THEN SET. The other way round asks -- the target does not move
