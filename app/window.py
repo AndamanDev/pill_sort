@@ -20,13 +20,13 @@ import time
 
 import cv2
 import numpy as np
-from PySide6.QtCore import (QPropertyAnimation, QRectF, QSize, Qt, QTimer,
-                            Signal)
+from PySide6.QtCore import (QEventLoop, QPropertyAnimation, QRectF, QSize, Qt,
+                            QTimer, Signal)
 from PySide6.QtGui import (QColor, QFont, QImage, QPainter, QPainterPath, QPen,
                            QPixmap)
 from PySide6.QtWidgets import (QFrame, QGraphicsOpacityEffect, QHBoxLayout,
-                               QLabel, QLineEdit, QMessageBox, QProgressBar,
-                               QPushButton, QSizePolicy, QVBoxLayout, QWidget)
+                               QLabel, QLineEdit, QProgressBar, QPushButton,
+                               QSizePolicy, QVBoxLayout, QWidget)
 
 from . import LOGO, RECORDS, SETTINGS
 from . import sound
@@ -73,6 +73,16 @@ ROI_POINTS = 4
 
 #: Said in the footer while the save button is dead, so the grey button is never a mystery.
 OVER_NOTE = "เกินจำนวนที่ต้องการ  นำออกก่อนจึงบันทึกได้"
+
+#: Said when the excess is in the bottle rather than on the tray. See _tick.
+BANKED_OVER_NOTE = ("เก็บไปแล้ว {n} เม็ด  เกินจำนวนที่ตั้งไว้  "
+                    "เทกลับแล้วกดนับใหม่")
+
+#: Said until a counting region has been drawn, which is now a precondition rather than
+#: a refinement -- see the note in _tick where saving is refused.
+NO_ROI_NOTE = "ยังไม่ได้กำหนดกรอบนับ  กดกำหนดกรอบนับก่อน"
+#: Said when somebody reaches the save with an empty tray and nothing banked.
+NOTHING_NOTE = "ยังไม่มีเม็ดยาให้บันทึก  วางยาบนถาดก่อน"
 
 #: Said while a round has been taken but the tray it was taken from is still full.
 CLEAR_NOTE = "กวาดเม็ดในถาดออกให้หมด  แล้วจึงเทรอบต่อไป"
@@ -208,11 +218,14 @@ def view_path(camera):
 def load_flip(camera) -> bool:
     """Whether this camera's picture is mirrored. A FILE OF ITS OWN, beside the region.
 
-    ON UNTIL SOMEBODY TURNS IT OFF. A webcam and a phone camera are both built to be
-    pointed at a face, and both hand over a mirror image because that is what a face
-    expects to see; a tray does not. Measured on this bench, both screens showed the tray
-    the wrong way round, so the setting that matches the hardware is the one that should
-    need no press -- and the press is there for a camera that does not mirror.
+    OFF UNTIL SOMEBODY TURNS IT ON, and the default moved here from the other end.
+    It was briefly on, on the strength of a bench report that the picture looked mirrored
+    -- which turned out to be this instead: the marks were computed by stretching the
+    frame onto the video pane while the surface underneath centre-crops it, so every mark
+    sat right in the middle of the tray and further and further out towards the rim. A
+    dot on the wrong side of a pill at the left edge of the tray reads as a mirrored
+    picture, and it was not one. CameraX's back camera does not mirror anything, so off is
+    what the hardware does; the button is for a lens that disagrees.
 
     Not a field in the region file, which is where it nearly went. Clearing the region
     deletes that file, and an operator who redraws the tray has not asked for the picture
@@ -221,9 +234,9 @@ def load_flip(camera) -> bool:
     """
     try:
         with open(view_path(camera), encoding="utf-8") as fh:
-            return bool(json.load(fh).get("flip", True))
+            return bool(json.load(fh).get("flip", False))
     except Exception:                                           # noqa: BLE001
-        return True
+        return False
 
 
 def save_flip(camera, flip):
@@ -617,6 +630,139 @@ class Toast(QWidget):
         self.dismiss()
 
 
+class Ask(QWidget):
+    """A question asked in the app's own face, over the screen it is about.
+
+    WHY NOT A MESSAGE BOX. QMessageBox borrows the operating system's dialog: its own title
+    bar, its own grey, its own idea of how big Thai is and which way round the buttons go.
+    On a screen that is otherwise one white card, a green header and 22px type, it arrives
+    looking like something a different program threw on top -- and on a machine set to the
+    Windows dark theme it arrived looking like a bug, because the sheet this app carries
+    names the colour of the INK and the box brought its own near-black background. Dark ink
+    on a near-black panel: a black rectangle with two ghost buttons and not a readable word
+    in it. That was patched by telling the box every colour it must not inherit. This
+    replaces the box instead, and the whole class of that bug with it: there is no longer a
+    surface in this app that the app does not paint.
+
+    It is built out of what the counting screen is already built out of -- #card, #primary,
+    #warn, #ghost, the same three the panel behind it uses -- so the question is the same
+    object as the screen rather than a visitor to it. And it is a CHILD of the window, like
+    the toast: it dims what it interrupts, it moves with the window, and it never appears
+    on the taskbar or behind the counter.
+
+    STILL MODAL, though nothing about it is a dialog. The scrim covers the window and eats
+    every click, and ask() does not return until one of the buttons is pressed -- the same
+    promise exec() made, kept with a local event loop. The camera keeps running behind the
+    dim, which a real dialog never allowed: the tray stays live while the operator decides.
+    """
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setObjectName("scrim")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self._loop = None
+        self._picked = 0
+        self._safe = 0
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addStretch(1)
+        middle = QHBoxLayout()
+        middle.addStretch(1)
+        self.card = QFrame()
+        self.card.setObjectName("card")
+        self.card.setFixedWidth(780)
+        middle.addWidget(self.card)
+        middle.addStretch(1)
+        outer.addLayout(middle)
+        outer.addStretch(1)
+
+        lay = QVBoxLayout(self.card)
+        lay.setContentsMargins(48, 40, 48, 36)
+        lay.setSpacing(14)
+        self.title = styled(QLabel(""), 32, QFont.Bold, T.INK)
+        self.lead = styled(QLabel(""), 23, QFont.DemiBold, T.INK)
+        self.detail = styled(QLabel(""), 19, QFont.Normal, T.INK_SOFT)
+        for lab in (self.title, self.lead, self.detail):
+            lab.setAlignment(Qt.AlignCenter)
+            lab.setWordWrap(True)
+            lay.addWidget(lab)
+        lay.addSpacing(10)
+        self.row = QHBoxLayout()
+        self.row.setSpacing(16)
+        lay.addLayout(self.row)
+        self.hide()
+
+    # --------------------------------------------------------------------------- ask
+    def ask(self, title, lead, detail, buttons, safe=0, lead_colour=None) -> int:
+        """Put the question up and do not come back until it is answered.
+
+        Returns the index of the button pressed. `safe` names the one that costs nothing,
+        which is what Escape does, what Enter does, and what a window closing underneath
+        this does -- so every way out that is not a deliberate press leaves the work alone.
+        """
+        self.title.setText(title)
+        self.lead.setText(lead)
+        self.lead.setVisible(bool(lead))
+        recolour(self.lead, lead_colour or T.INK)
+        self.detail.setText(detail)
+        self.detail.setVisible(bool(detail))
+
+        while self.row.count():
+            item = self.row.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        self._safe = self._picked = int(safe)
+        keep = None
+        for i, (text, kind) in enumerate(buttons):
+            btn = sized(QPushButton(text), 21, QFont.Bold)
+            btn.setObjectName(kind)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setMinimumHeight(72)
+            btn.clicked.connect(lambda _=False, n=i: self._pick(n))
+            self.row.addWidget(btn, 1)
+            if i == self._safe:
+                keep = btn
+
+        parent = self.parentWidget()
+        if parent is not None:
+            self.setGeometry(parent.rect())
+        self.show()
+        self.raise_()
+        (keep or self).setFocus()
+
+        self._loop = QEventLoop(self)
+        self._loop.exec()                   # the tick keeps running; the camera stays live
+        self._loop = None
+        self.hide()
+        return self._picked
+
+    def _pick(self, n):
+        self._picked = int(n)
+        if self._loop is not None:
+            self._loop.quit()
+
+    def keyPressEvent(self, ev):
+        if ev.key() in (Qt.Key_Escape, Qt.Key_Return, Qt.Key_Enter):
+            self._pick(self._safe)
+        else:
+            super().keyPressEvent(ev)
+
+    def mousePressEvent(self, ev):
+        # Eaten, not ignored. An unaccepted press walks up to the window underneath, which
+        # is the whole thing this is covering.
+        ev.accept()
+
+    def hideEvent(self, ev):
+        # The window closing with a question open would otherwise leave the loop spinning
+        # with nothing left to press.
+        if self._loop is not None:
+            self._picked = self._safe
+            self._loop.quit()
+        super().hideEvent(ev)
+
+
 # ----------------------------------------------------------------------------- window
 class Window(QWidget):
     def __init__(self, capture, infer, target=0, camera=0):
@@ -658,6 +804,8 @@ class Window(QWidget):
         self._fit = None                    # the PANEL_FITS entry now applied
         self._bar_colour = None             # so the bar is restyled only on a change
         self._block = ""                    # why saving is refused; "" when it is allowed
+        self._block_kind = ""               # "fault", "over", "setup" -- see _tick
+        self._was_fault = False             # was the last block one worth a noise
         self._note_colour = None            # so the footer is restyled only on a change
         self._fitting = False
 
@@ -682,10 +830,14 @@ class Window(QWidget):
         row = QHBoxLayout(body)
         row.setContentsMargins(20, 20, 20, 20)
         row.setSpacing(20)
-        # The number left, the tray right: the figure is what is being read, the picture
-        # is only there to check it against.
-        row.addWidget(self._panel(), 0)
+        # THE PICTURE LEFT, THE NUMBER RIGHT, which is the other way round from how this
+        # window began. The reasoning then was that the figure is what is being read and
+        # the picture only there to check it -- true of the figure, and it left the
+        # controls on the far side of the screen from the hand that works the tray. The
+        # phone was rebuilt this way first and the two screens have to match, or an
+        # operator who uses both learns the layout twice and reaches wrong once.
         row.addWidget(self._camera(), 1)
+        row.addWidget(self._panel(), 0)
         root.addWidget(body, 1)
         root.addWidget(self._footer())
 
@@ -700,6 +852,7 @@ class Window(QWidget):
 
         self._meta()
         self.toast = Toast(self)
+        self.ask_box = Ask(self)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
         self.timer.start(DRAW_MS)
@@ -716,6 +869,10 @@ class Window(QWidget):
             #rule {{ background: {T.LINE}; max-height: 1px; border: 0; }}
             #toast {{ background: {T.GREEN_700}; border-radius: {T.R_XL}px;
                       border: 1px solid {T.GREEN_900}; }}
+            /* Dark enough that the card in front of it is plainly the only live thing,
+               light enough that the tray behind it can still be watched while the
+               operator decides -- which is the point of not being a dialog. */
+            #scrim {{ background: rgba(9, 18, 14, 165); }}
 
             QPushButton#primary {{
                 font-family: {T.FONT_STACK}; background: {T.GREEN_700}; color: #fff;
@@ -826,10 +983,11 @@ class Window(QWidget):
         self.list_btn.setObjectName("topbtn")
         self.list_btn.clicked.connect(self._show_records)
         lay.addWidget(self.list_btn)
-        self.export_btn = sized(QPushButton("ส่งออก CSV"), 19)
-        self.export_btn.setObjectName("topbtn")
-        self.export_btn.clicked.connect(self._export)
-        lay.addWidget(self.export_btn)
+        # "ส่งออก CSV" USED TO SIT HERE and has gone to the records window, where the rows
+        # it writes are. Exporting is an errand for the end of a shift; it was up here
+        # because the header had room, which is not a reason for a control to be anywhere,
+        # and on a counting screen every button that is not about the tray is one more
+        # thing to rule out in a hurry.
         lay.addSpacing(16)
 
         self.clock = styled(QLabel(""), 18, QFont.Normal, T.INK_MUTED)
@@ -844,6 +1002,20 @@ class Window(QWidget):
         lay = self.panel_lay = QVBoxLayout(card)
         lay.setContentsMargins(24, 24, 24, 24)
         lay.setSpacing(14)
+
+        # THE VERDICT GOES IN THE CORNER, hard against the panel's right edge, and it is
+        # the first thing in the panel rather than a caption under the figure.
+        #
+        # A caption is read after the thing it captions. This is not a caption: the figure
+        # is a number somebody has to compare against another number, and the word --
+        # ครบ, เกิน, ขาด -- IS the answer. Up here it is where an eye coming off the tray
+        # lands, and it is in the same place as the phone's.
+        vrow = QHBoxLayout()
+        vrow.addStretch(1)
+        self.verdict = styled(QLabel("พร้อมนับ"), 26, QFont.Bold)
+        vrow.addWidget(self.verdict)
+        lay.addLayout(vrow)
+        self._set_badge(T.BADGE_IDLE)
 
         # WHERE THE BIG NUMBER CAME FROM, and only when that is a question. On one pour it
         # says nothing and takes no room, because on one pour the figure below is simply
@@ -867,13 +1039,6 @@ class Window(QWidget):
         # shape is visible from further back, and the dark-text-on-tint pairing keeps it
         # legible under the fluorescent strip this bench sits beneath. The words stay --
         # the colour is still not the message.
-        vrow = QHBoxLayout()
-        vrow.addStretch(1)
-        self.verdict = styled(QLabel("พร้อมนับ"), 26, QFont.Bold)
-        vrow.addWidget(self.verdict)
-        vrow.addStretch(1)
-        lay.addLayout(vrow)
-        self._set_badge(T.BADGE_IDLE)
 
         # HOW FAR ALONG, without having to do the subtraction. The number says 47 and the
         # target says 60; the bar says "nearly there" before either has been read, which is
@@ -890,18 +1055,21 @@ class Window(QWidget):
 
         trow = QHBoxLayout()
         trow.setSpacing(10)
-        minus = sized(QPushButton("−"), 26, QFont.Bold)
-        minus.setObjectName("step")
-        minus.clicked.connect(lambda: self._set_target(self.target - 1))
-        trow.addWidget(minus)
+        # WORDS, NOT PLUS AND MINUS. Stepping from 0 to 120 one press at a time is not a
+        # control, it is a punishment -- and a minus key on a prescription quantity invites
+        # exactly that. Clear it, or type it; the box between them is still typeable too.
+        self.clear_btn = sized(QPushButton("เคลียร์"), 19)
+        self.clear_btn.setObjectName("ghost")
+        self.clear_btn.clicked.connect(lambda: self._set_target(0))
+        trow.addWidget(self.clear_btn)
         self.target_edit = sized(QLineEdit(str(self.target)), 28, QFont.Bold)
         self.target_edit.setAlignment(Qt.AlignCenter)
         self.target_edit.editingFinished.connect(self._target_typed)
         trow.addWidget(self.target_edit, 1)
-        plus = sized(QPushButton("+"), 26, QFont.Bold)
-        plus.setObjectName("step")
-        plus.clicked.connect(lambda: self._set_target(self.target + 1))
-        trow.addWidget(plus)
+        self.enter_btn = sized(QPushButton("ป้อนจำนวน"), 19)
+        self.enter_btn.setObjectName("ghost")
+        self.enter_btn.clicked.connect(self._type_target)
+        trow.addWidget(self.enter_btn)
         lay.addLayout(trow)
 
         # In a widget of its own, not a bare layout: the fitter hides this row on a short
@@ -960,10 +1128,13 @@ class Window(QWidget):
         self.roi_btn.clicked.connect(self._roi_clicked)
         frow.addWidget(self.roi_btn)
 
-        self.roi_clear = sized(QPushButton("ล้างกรอบ"), 19)
-        self.roi_clear.setObjectName("ghost")
-        self.roi_clear.clicked.connect(self._roi_cleared)
-        frow.addWidget(self.roi_clear)
+        # THERE IS NO SECOND BUTTON IN THIS ROW ANY MORE. "ล้างกรอบ" went when a region
+        # became the thing that makes counting possible -- a control whose only use is to
+        # break the screen -- and "ถอยจุด" went after it: four taps is a short enough
+        # gesture that starting it again costs less than a second control to understand,
+        # and the button beside it already says ยกเลิก while they are going down. A right
+        # click still takes the last corner back, which is a mouse habit rather than a
+        # control, and costs nobody a glance.
         lay.addLayout(frow)
 
         self.save_btn = sized(QPushButton("บันทึกผล"), 22, QFont.Bold)
@@ -989,8 +1160,13 @@ class Window(QWidget):
         # of the picture rather than of the count, it is set once when the camera is aimed
         # and then never again, and the panel has no row to spare -- the header of this card
         # is the only place on the screen with room that is also the right place.
+        # The flip button has gone from both screens. The mechanism stays -- see
+        # CameraView._to_frame -- because a camera that really is mirrored still has to be
+        # undoable, and load_flip reads a file that can be edited. It is simply not a thing
+        # a bench needs on screen every day.
         self.flip_btn = sized(QPushButton("พลิกภาพ"), 19)
         self.flip_btn.setObjectName("topbtn")
+        self.flip_btn.setVisible(False)
         # CHECKABLE, so the button says which way the picture is rather than only offering
         # to change it. Somebody who walks up to this bench cannot tell a mirrored tray
         # from an unmirrored one by looking at the tray -- both are a tray from above --
@@ -998,8 +1174,7 @@ class Window(QWidget):
         self.flip_btn.setCheckable(True)
         self.flip_btn.setChecked(self.flip)
         self.flip_btn.clicked.connect(self._flip_clicked)
-        head.addWidget(self.flip_btn)
-        head.addSpacing(8)
+
         self.roi_chip = styled(QLabel(""), 18, QFont.DemiBold)
         head.addWidget(self.roi_chip)
         self.ms_chip = styled(QLabel(""), 18, QFont.DemiBold)
@@ -1117,8 +1292,60 @@ class Window(QWidget):
         self._reset_armed_at = 0.0
 
     def _set_target(self, value):
-        self.target = max(0, int(value))
+        """Set the prescription, or ask first when pours are already past it.
+
+        THE QUESTION IS ASKED WHERE THE CHOICE IS MADE, and for EVERY change once a pour
+        is banked, not only for an impossible one.
+
+        The impossible one is the obvious case: twenty was set, ten were poured and
+        banked, and now the number turns out to be five. The ten are in a bottle, so five
+        cannot be reached by taking anything off the tray.
+
+        But twenty to sixty is not safe either, just survivable. The prescription is the
+        thing this app exists to get right, and a tray with pours already banked is exactly
+        when somebody is reaching across the screen. Changed by accident it would not show:
+        the figure keeps counting, the verdict quietly re-reads against a number nobody
+        chose, and what is dispensed is wrong with nothing on screen admitting it.
+        """
+        want = max(0, int(value))
+        if want != self.target and (self.rounds or self.clearing):
+            if not self._ask_retarget(want):
+                self.target_edit.setText(str(self.target))  # put the old one back
+                return
+        self.target = want
         self.target_edit.setText(str(self.target))
+
+    def _ask_retarget(self, want) -> bool:
+        """True to take the new number and start over, False to keep the old one."""
+        loses = bool(want) and want < self.banked()
+        if loses:
+            lead = f"มากกว่าจำนวนใหม่ {want} เม็ด"
+            detail = ("เม็ดที่เก็บแล้วอยู่ในกระปุก ไม่ได้อยู่บนถาด จึงเอาออกไม่ได้\n"
+                      f"ถ้าจะใช้ {want} ต้องเทกลับลงถาดแล้วเริ่มนับใหม่")
+        else:
+            lead = f"จะเปลี่ยนจาก {self.target} เป็น {want} เม็ด"
+            detail = "เม็ดที่เก็บไว้แล้วยังอยู่ครบ นับต่อได้เลย"
+        # Keep first and in the quiet coat, take second in the loud one -- the same order
+        # and the same two coats the phone puts them in, because an operator who works both
+        # screens should not have to read the buttons twice. The safe one holds the focus,
+        # so Enter and Escape both leave the pours alone.
+        picked = self.ask_box.ask(
+            f"เก็บไปแล้ว {self.banked()} เม็ด", lead, detail,
+            ((f"ใช้จำนวนเดิม {self.target}", "ghost"),
+             (f"เริ่มนับใหม่ที่ {want}" if loses else f"เปลี่ยนเป็น {want}",
+              "warn" if loses else "primary")),
+            safe=0, lead_colour=T.DANGER if loses else T.INK)
+        if picked != 1:
+            self.note = f"ใช้จำนวนเดิม {self.target} เม็ด"
+            return False
+        # The pours only go when they have to -- when the new number is smaller than what
+        # is already in the bottle. A larger one changes nothing that has been counted.
+        if loses:
+            self._clear_rounds()
+            self.note = f"เริ่มนับใหม่  ต้องการ {want} เม็ด"
+        else:
+            self.note = f"เปลี่ยนเป็น {want} เม็ด  ยอดที่เก็บไว้ยังอยู่"
+        return True
 
     def _target_typed(self):
         text = self.target_edit.text().strip()
@@ -1146,6 +1373,17 @@ class Window(QWidget):
         self._disarm()
         self.note = "พลิกภาพซ้าย-ขวาแล้ว" if self.flip else "เลิกพลิกภาพแล้ว"
 
+    def _type_target(self):
+        """"ป้อนจำนวน": put the caret in the box and select what is there.
+
+        The phone raises a drawn keypad because a handset has no keyboard worth reaching
+        for. This bench has one under the operator's hands, so the same button does the
+        same job the shortest way: the field is focused, its contents selected, and the
+        next digit typed replaces them.
+        """
+        self.target_edit.setFocus(Qt.ShortcutFocusReason)
+        self.target_edit.selectAll()
+
     def _roi_clicked(self):
         """Start placing corners, or stop if they are already being placed."""
         if self.arming:
@@ -1156,21 +1394,6 @@ class Window(QWidget):
         self.view.set_arming(True)
         self.roi_btn.setText("ยกเลิก")
         self._roi_prompt()
-
-    def _roi_cleared(self):
-        """The second button in the row: take a corner back, or clear the whole region.
-
-        ONE BUTTON, TWO JOBS, and they are the same job at two moments. While corners are
-        being placed the only thing anybody wants from it is the last one back; once the
-        region is set the only thing anybody wants is it gone. A separate undo would sit
-        dead and unexplained for all the hours nobody is drawing a region.
-        """
-        if self.arming:
-            self._corner_undo()
-            return
-        self.infer.roi = None
-        self._persist()
-        self._disarm()
 
     def _corner(self, x, y):
         """One corner placed. The fourth closes the shape and sets the region."""
@@ -1211,8 +1434,6 @@ class Window(QWidget):
         left = ROI_POINTS - len(self.pending)
         self.note = (f"แตะมุมถาดทีละมุม  อีก {left} จุด"
                      "     คลิกขวาเพื่อถอยจุดล่าสุด")
-        self.roi_clear.setText("ถอยจุด")
-        self.roi_clear.setEnabled(bool(self.pending))
 
     def _disarm(self):
         self.arming = False
@@ -1220,8 +1441,6 @@ class Window(QWidget):
         self.view.set_arming(False)
         self.roi_btn.setText("กำหนดกรอบใหม่" if self.infer.roi
                              else "กำหนดกรอบนับ")
-        self.roi_clear.setText("ล้างกรอบ")
-        self.roi_clear.setEnabled(bool(self.infer.roi))
         self.note = ""
 
     def _persist(self):
@@ -1241,6 +1460,11 @@ class Window(QWidget):
         press, or a later shortcut could all reach this method anyway -- and the rule that
         an over-count is not filed belongs with the writing, not with the widget.
         """
+        if self.arming:
+            # Mid-gesture the number on screen was measured through a region that is about
+            # to be replaced. Filing it would record a figure nobody can reproduce.
+            self._roi_prompt()
+            return
         if self._block:
             self.note = self._block
             return
@@ -1254,6 +1478,15 @@ class Window(QWidget):
         live = 0 if self.clearing else int(count)
         rounds = list(self.rounds) + ([live] if live or not self.rounds else [])
         total = self.banked() + live
+        if total <= 0:
+            # THE SAME RULE THE DEAD BUTTON DRAWS, decided on the SNAPSHOT rather than on
+            # the screen. A disabled button is a presentation detail -- a keyboard, a touch
+            # driver that sends a release without a press, a later shortcut -- and what
+            # goes in the book is decided here. Placed after the snapshot because that is
+            # the count being filed; asking the live one could refuse a tray that had
+            # tablets on it when the button went down.
+            self.note = NOTHING_NOTE
+            return
         # EVERY NUMBER IS ALREADY FIXED BEFORE THE QUESTION IS ASKED, and that is why the
         # question is asked here rather than before the snapshot. A modal runs a nested
         # event loop, so the repaint timer keeps firing behind it: the tray can empty, the
@@ -1337,27 +1570,21 @@ class Window(QWidget):
         """
         if not (self.rounds and self.target and total < self.target):
             return True
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Warning)
-        box.setWindowTitle("ยังเทค้างอยู่")
-        box.setText("ยังเทค้างอยู่")
-        box.setInformativeText(
-            f"เก็บแล้ว {len(self.rounds)} รอบ = {' + '.join(str(n) for n in rounds)} "
-            f"= {total} เม็ด\n"
-            f"จากที่ต้องการ {self.target} เม็ด  ขาดอีก {self.target - total} เม็ด\n\n"
-            f"ถ้าบันทึกตอนนี้ ยอดสะสมจะถูกล้าง และนับต่อจากเดิมไม่ได้")
-        # 19px, the same floor the rest of this screen holds to, and set on the box rather
-        # than inherited: a QMessageBox picks up the window's sheet, whose QWidget rule is
-        # 16px, and Thai tone marks do not survive 16px at this DPI.
-        box.setStyleSheet(f"QLabel {{ font-family: {T.FONT_STACK}; font-size: 19px; }}"
-                          f"QPushButton {{ font-family: {T.FONT_STACK}; font-size: 19px; "
-                          f"font-weight: 600; padding: 10px 18px; }}")
-        back = box.addButton("กลับไปเทต่อ", QMessageBox.RejectRole)
-        go = box.addButton(f"บันทึก {total} เม็ด", QMessageBox.AcceptRole)
-        box.setDefaultButton(back)
-        box.setEscapeButton(back)
-        box.exec()
-        return box.clickedButton() is go
+        # THE SHORTFALL IS THE RED LINE, not the total. What the operator has to decide on
+        # is how many are missing; the sum is the working that gets them there and belongs
+        # in the small print with it. And one pour gets "= 35 เม็ด", not "= 35 = 35 เม็ด":
+        # the breakdown only earns its space when there is something to break down.
+        sums = " + ".join(str(n) for n in rounds)
+        banked = (f"เก็บแล้ว {len(rounds)} รอบ = {total} เม็ด" if len(rounds) < 2
+                  else f"เก็บแล้ว {len(rounds)} รอบ = {sums} = {total} เม็ด")
+        picked = self.ask_box.ask(
+            "ยังเทค้างอยู่",
+            f"ขาดอีก {self.target - total} เม็ด จากที่ต้องการ {self.target} เม็ด",
+            f"{banked}\n"
+            f"ถ้าบันทึกตอนนี้ ยอดสะสมจะถูกล้าง และนับต่อจากเดิมไม่ได้",
+            (("กลับไปเทต่อ", "ghost"), (f"บันทึก {total} เม็ด", "warn")),
+            safe=0, lead_colour=T.DANGER)
+        return picked == 1
 
     def _free_stamp(self) -> str:
         """A file name no record already has.
@@ -1518,7 +1745,10 @@ class Window(QWidget):
                 self.note = "ถาดว่างแล้ว  เทรอบต่อไปได้"
         live = 0 if self.clearing else count
         total = self.banked() + live
-        self.count_lbl.setText(str(total))
+        # NO REGION, NO NUMBER. Not a zero and not the count of the whole picture -- a
+        # figure on this screen is a claim about a tray, and until somebody has said which
+        # part of the bench is the tray there is nothing to make that claim about.
+        self.count_lbl.setText("—" if not self.infer.roi else str(total))
 
         if self.clearing:
             strip = (f"เก็บแล้ว {len(self.rounds)} รอบ  รวม {self.banked()} เม็ด"
@@ -1538,7 +1768,9 @@ class Window(QWidget):
         # The verdict is words as well as colour. A dispensary is not the place to make
         # somebody read a hue: colour-blindness aside, a glance across a room resolves a
         # word faster than a shade of orange.
-        if self.target:
+        if not self.infer.roi:
+            text, colour, pair = "ยังไม่ได้กำหนดกรอบนับ", T.INK_MUTED, T.BADGE_IDLE
+        elif self.target:
             diff = total - self.target
             if diff == 0:
                 text, colour, pair = "ครบตามจำนวน", T.GREEN_700, T.BADGE_OK
@@ -1567,14 +1799,40 @@ class Window(QWidget):
         # Then over the target, which is not a fault at all -- it is a tray with too much
         # in it, and the answer is to take some out rather than to write it down. Under the
         # target stays saveable: a part-filled tray is a normal thing to record.
+        # A BLOCK ALSO HAS A KIND, and three things read it: the sound, the colour of the
+        # footer, and whether the note is cleared when the block lifts. They used to tell
+        # the cases apart by comparing the TEXT against OVER_NOTE, which worked while there
+        # was one of each -- and stopped the day a second "over" message arrived with a
+        # number formatted into it, and the day a block appeared that is not a fault at all.
+        #   fault  the machine has stopped: red, and a noise, because nobody is watching
+        #   over   too many tablets: orange, no noise, the operator is already looking
+        #   setup  something has not been done yet: orange, no noise, not a fault
         if stale > STALE_S:
-            block = f"ภาพจากกล้องหยุด {stale:.0f} วินาที  ตรวจสายกล้องหรือโปรแกรมที่ใช้กล้องอยู่"
+            block, kind = (f"ภาพจากกล้องหยุด {stale:.0f} วินาที  "
+                           f"ตรวจสายกล้องหรือโปรแกรมที่ใช้กล้องอยู่"), "fault"
         elif getattr(self.infer, "error", ""):
-            block = f"โมเดลผิดพลาด  {self.infer.error}"
+            block, kind = f"โมเดลผิดพลาด  {self.infer.error}", "fault"
+        elif not self.infer.roi:
+            # COUNTING THE WHOLE PICTURE IS NOT COUNTING A TRAY. The bench, the operator's
+            # hands and the next tray along are all in shot, and a number that includes
+            # them is wrong in a way nothing on screen would show. So the region stops
+            # being an optional refinement and becomes the thing that makes a count mean
+            # anything.
+            block, kind = NO_ROI_NOTE, "setup"
         elif self.target and total > self.target:
-            block = OVER_NOTE
+            # TWO WAYS TO BE OVER, and only one of them can be fixed by hand. Tablets on
+            # the tray can be taken off it. Tablets already BANKED cannot: they are in the
+            # bottle, the tray they came off is empty, and "นำออกก่อน" asks for something
+            # that does not exist. That is where somebody lands who banks a pour and is
+            # then told the prescription was smaller than they thought.
+            if self.banked() > self.target:
+                block = BANKED_OVER_NOTE.format(n=self.banked())
+            else:
+                block = OVER_NOTE
+            kind = "over"
         else:
-            block = ""
+            block, kind = "", ""
+        self._block_kind = kind
 
         # WHY A ROUND MAY NOT BE TAKEN, in the same order and for the same reason: the
         # button is drawn dead AND _take_round refuses, because a disabled button is a
@@ -1584,6 +1842,8 @@ class Window(QWidget):
         # harder rather than waiting the half second it is asking for.
         if block:
             round_block = block
+        elif self.arming:
+            round_block = "กำลังกำหนดกรอบนับ  วางมุมให้ครบก่อน"
         elif self.clearing:
             round_block = CLEAR_NOTE
         elif count <= 0:
@@ -1610,7 +1870,16 @@ class Window(QWidget):
         # was wrong was that it looked identical to filing a complete one: same green, same
         # word, and the operator learns the gesture rather than the state. So the button
         # keeps the job and loses the disguise.
-        if self.target and total < self.target:
+        # AND AT ZERO IT SAYS NOTHING AND DOES NOTHING. A record of no tablets is not a
+        # short count -- it is the screen as it was found, before anybody poured anything,
+        # and filing it puts a row in the book that says a prescription was dispensed empty.
+        # The window opens in this state and stays in it between every tray, which is
+        # exactly when a stray press lands. So the button is dead, and it drops the orange
+        # "ขาด 60" coat with it: a control that cannot be pressed should not also be
+        # shouting about a shortfall nobody has caused yet.
+        if total <= 0:
+            save_text, save_kind = "บันทึกผล", "primary"
+        elif self.target and total < self.target:
             save_text, save_kind = f"บันทึกว่าไม่ครบ (ขาด {self.target - total})", "warn"
         else:
             save_text, save_kind = "บันทึกผล", "primary"
@@ -1625,15 +1894,21 @@ class Window(QWidget):
             self.save_btn.style().polish(self.save_btn)
 
         if block != self._block:
-            was_broken = self._block not in ("", OVER_NOTE)
+            was_broken = self._was_fault
+            was_note = self._block
+            self._was_fault = kind == "fault"
             self._block = block
-            self.save_btn.setEnabled(not block)
             if block:
                 self.note = block
-                if block != OVER_NOTE:
+                if kind == "fault":
                     sound.problem()         # once, on the way in, not every frame
-            elif self.note in (OVER_NOTE, "") or was_broken:
+            elif self.note == was_note or self.note == "" or was_broken:
                 self.note = ""
+        # SET EVERY TICK, not only when the block changes: `arming` is not a block -- it
+        # has no message, because the footer is already saying how many corners are left,
+        # which is better advice than a refusal could give -- so nothing above would ever
+        # notice it going on and off.
+        self.save_btn.setEnabled(not self._block and not self.arming and total > 0)
         recolour(self.count_lbl, colour if self.target else T.GREEN_700)
 
         # The bar is coloured with the verdict, not with the fill: at 61 of 60 a full green
@@ -1666,10 +1941,10 @@ class Window(QWidget):
         # the operator fixes by hand), red for the machine having stopped counting.
         if not self._block or self.note != self._block:
             colour = T.GREEN_700
-        elif self._block == OVER_NOTE:
-            colour = T.WARN
-        else:
+        elif self._block_kind == "fault":
             colour = T.DANGER
+        else:
+            colour = T.WARN
         if colour != self._note_colour:
             self._note_colour = colour
             recolour(self.note_lbl, colour)
@@ -1679,6 +1954,8 @@ class Window(QWidget):
         self._fit_panel()
         if getattr(self, "toast", None) is not None:
             self.toast.recentre()
+        if getattr(self, "ask_box", None) is not None and self.ask_box.isVisible():
+            self.ask_box.setGeometry(self.rect())
 
     def _fit_panel(self):
         """Pick the roomiest PANEL_FITS entry the card can actually hold.

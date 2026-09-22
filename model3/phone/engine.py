@@ -99,6 +99,9 @@ def nms(boxes, scores, iou):
     """
     if not len(boxes):
         return np.zeros((0,), np.int32)
+    got = _cv_nms(boxes, scores, iou)
+    if got is not None:
+        return got
     x1 = boxes[:, 0]
     y1 = boxes[:, 1]
     x2 = boxes[:, 0] + boxes[:, 2]
@@ -124,6 +127,72 @@ def nms(boxes, scores, iou):
         ratio = np.where(union > 0, overlap / np.maximum(union, 1e-9), 0.0)
         order = rest[ratio <= iou]
     return np.array(keep, np.int32)
+
+
+#: Which shape cv2.dnn.NMSBoxes will take on this OpenCV, worked out once on the first
+#: frame. "" until then, "none" if it will take none of them.
+_CV_NMS_FORM = ""
+
+
+def _cv_nms(boxes, scores, iou):
+    """The same de-duplication in C++, or None if this OpenCV will not do it.
+
+    WHY THIS EXISTS, and it is the single biggest thing the phone was paying for.
+    The loop below runs one turn per KEPT box, and every turn is a handful of numpy calls
+    on a shrinking array. On a desktop that is a microsecond of overhead each and the whole
+    thing is a millisecond. Through Chaquopy on the board's A55 it is tens of microseconds
+    each, and a tray of sixty tablets makes about six hundred of them: measured on the
+    bench, an empty tray took 556 ms a frame and a full one 804. A convolution does not
+    care what is in the picture, so all 248 ms of that difference was here.
+
+    WHY IT WAS WRITTEN OUT IN THE FIRST PLACE, and why that reasoning stopped one step
+    short. OpenCV 4.5.1 -- the newest Chaquopy ships -- binds NMSBoxes to vector<Rect>,
+    which is INTEGER boxes, and handing it the model's float boxes raises. True, and the
+    conclusion drawn was "no NMSBoxes on the phone". But integer boxes are not a
+    compromise for this job: these are letterboxed pixels, a tablet is thirty of them
+    across, and half a pixel decides nothing. Measured over 54 frames of two trays,
+    including trays shot small enough that rounding bites hardest, the kept SET was
+    identical on every frame that had a detection.
+
+    THE FORM IS PROBED, NOT ASSUMED, because that is the mistake this is undoing: which
+    argument types a binding accepts differs between OpenCV builds, and the answer here is
+    a cheap call on the first frame rather than a version number somebody has to keep in
+    step with an APK. If nothing works, None goes back and the loop below runs as it always
+    did -- slowly, and correctly.
+    """
+    global _CV_NMS_FORM
+    if _CV_NMS_FORM == "none" or cv2 is None:
+        return None
+    ints = np.rint(boxes).astype(np.int32)
+    flat = np.asarray(scores, np.float32)
+    # 0.0, not `conf`: the scores were thresholded before they got here, and asking cv2 to
+    # threshold them again on a > where the caller used a >= would drop a box sitting
+    # exactly on the line. The de-duplication is all that is wanted from it.
+    # THE LIST FORM IS TRIED FIRST, and on a desktop that is the slower of the two.
+    #
+    # It is the form every OpenCV example uses and the one the 4.5.1 binding was written
+    # against: a Python list of [x, y, w, h]. Handing that binding a numpy array instead
+    # works on the 4.10 this was developed against, and "works on a newer build" is exactly
+    # the reasoning that has already cost this app one dead APK. The list costs a few
+    # hundred Python objects a frame against the four hundred and ninety numpy calls it
+    # replaces, so the win is kept either way, and the array is left as the second choice
+    # for a build that refuses the list.
+    forms = ((_CV_NMS_FORM,) if _CV_NMS_FORM else ("list", "array"))
+    for form in forms:
+        try:
+            if form == "array":
+                idx = cv2.dnn.NMSBoxes(ints, flat, 0.0, float(iou))
+            else:
+                idx = cv2.dnn.NMSBoxes(ints.tolist(), flat.tolist(), 0.0, float(iou))
+        except Exception:                                       # noqa: BLE001
+            continue
+        _CV_NMS_FORM = form
+        if idx is None or len(idx) == 0:
+            return np.zeros((0,), np.int32)
+        # 4.5.1 hands back an Nx1; newer builds hand back a flat N. reshape takes both.
+        return np.asarray(idx, np.int32).reshape(-1)
+    _CV_NMS_FORM = "none"
+    return None
 
 
 def decode(raw, gain, pads, conf=0.45, iou=0.4, frame_shape=None):
@@ -165,16 +234,47 @@ def decode(raw, gain, pads, conf=0.45, iou=0.4, frame_shape=None):
     return out, scores.astype(np.float32)
 
 
+def _poly(roi):
+    """The region as one int array, BUILT ONCE PER REGION rather than once per tablet.
+
+    np.array(roi) used to sit inside the per-box test, so a tray of sixty tablets built
+    sixty identical four-point arrays, twice over -- once to count them and once to draw
+    them. Free on a desktop, and on the board it is another hundred-odd Python-to-numpy
+    calls a frame in the same place the NMS loop was found.
+    """
+    key = tuple(map(tuple, roi))
+    got = _POLY_CACHE.get(key)
+    if got is None:
+        got = np.array(roi, np.int32)
+        _POLY_CACHE.clear()          # one region at a time; this is a memo, not a store
+        _POLY_CACHE[key] = got
+    return got
+
+
+_POLY_CACHE = {}
+
+
 def inside(box, roi) -> bool:
     """Is the box's centre inside the drawn region? The same test app/ counts with."""
     if not roi:
         return True
     cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
-    return cv2.pointPolygonTest(np.array(roi, np.int32), (float(cx), float(cy)), False) >= 0
+    return cv2.pointPolygonTest(_poly(roi), (float(cx), float(cy)), False) >= 0
 
 
 def count_inside(boxes, roi) -> int:
-    return sum(1 for b in boxes if inside(b, roi))
+    if not roi or not len(boxes):
+        return len(boxes)
+    # ONE call over every centre, rather than one call per tablet. pointPolygonTest takes
+    # a point at a time, so the loop stays -- but the polygon is built once and the early
+    # return above spares the whole thing when no region is drawn, which is most benches.
+    poly = _poly(roi)
+    n = 0
+    for b in boxes:
+        if cv2.pointPolygonTest(poly, (float((b[0] + b[2]) / 2),
+                                       float((b[1] + b[3]) / 2)), False) >= 0:
+            n += 1
+    return n
 
 
 class Engine:

@@ -299,11 +299,30 @@ class MainActivity : ComponentActivity() {
 
             val modelBytes = assets.open("model/pillcount-det-v3.onnx").use { it.readBytes() }
             step(30, "วัดความเร็วโมเดล")
-            // The preferences are where the provider race's winner is kept, under the
-            // same install stamp the assets use: a new APK brings a new model and a new
-            // ONNX Runtime, and last week's answer is about neither of them.
+
+            // THE RACE IS REMEMBERED AGAINST THE MODEL, NOT AGAINST THE INSTALL.
+            //
+            // It used to share the assets' stamp -- versionCode plus lastUpdateTime -- on
+            // the reasoning that a new APK brings a new model. True of some APKs and false
+            // of most: lastUpdateTime changes every single time anything is sideloaded, so
+            // a rebuild that touched a button's colour threw the answer away and raced
+            // again. That race builds three ONNX sessions and puts nine forward passes
+            // through them, and on this bench a pass is 556 ms -- five seconds of loading
+            // screen, plus whatever NNAPI spends compiling the graph for the device,
+            // charged to every install during a week of them.
+            //
+            // What the answer actually depends on is the bytes of the graph. CRC32 of
+            // them, and their length, is what the key is now made of: change the export
+            // and the race runs, change a caption and it does not.
+            //
+            // The one thing this does NOT notice is ONNX Runtime itself being upgraded,
+            // which is a line in build.gradle and a thing somebody does on purpose. Bump
+            // MODEL_KEY_SALT when that happens.
+            val crc = java.util.zip.CRC32().apply { update(modelBytes) }.value
+            val modelKey = "$MODEL_KEY_SALT-$crc-${modelBytes.size}"
+            Log.i(TAG, "model key $modelKey")
             val ort = OrtEngine(modelBytes,
-                                getSharedPreferences(ENGINE_PREFS, MODE_PRIVATE), version)
+                                getSharedPreferences(ENGINE_PREFS, MODE_PRIVATE), modelKey)
             engine = ort
             step(45, "โหลดโมเดลตรวจจับเม็ดยา")
 
@@ -483,6 +502,11 @@ class MainActivity : ComponentActivity() {
             // finally clause closes the ImageProxy, and jumping out of it past that is
             // how a camera pipeline stalls on its fourth frame.
             show(rgba)
+            // A WHOLE FRAME HAS COME BACK. That is what clears OrtEngine's crash
+            // breadcrumb -- not the session building, not the race, which both happen on
+            // zeros before the camera is even open. Only here has the chosen provider been
+            // handed real data and returned from it.
+            engine?.healthy()
         } catch (t: Throwable) {
             Log.e(TAG, "frame failed", t)
             status("ประมวลผลภาพไม่สำเร็จ\n${t.javaClass.simpleName}: ${t.message}")
@@ -642,11 +666,24 @@ class MainActivity : ComponentActivity() {
      * screen than the mirrored one it set out to fix.
      */
     private fun applyTouchReply(reply: String) {
-        val want = try {
-            JSONObject(reply).optBoolean("flip", mirrored)
+        val json = try {
+            JSONObject(reply)
         } catch (t: Throwable) {
             return                                  // a reply we cannot read changes nothing
         }
+
+        // CLOSING IS THE ACTIVITY'S ALONE. The screen is drawn by Python and every control
+        // on it is answered there, but a window is Android's -- so the cross in the header
+        // sets a flag, Python reports it here, and this is the line that acts on it. The
+        // guard that makes it take two taps is on the Python side with the other two, where
+        // it can see whether there are counted pours to warn about.
+        if (json.optBoolean("quit", false)) {
+            Log.i(TAG, "closing on the operator's request")
+            runOnUiThread { finishAndRemoveTask() }
+            return
+        }
+
+        val want = json.optBoolean("flip", mirrored)
         if (want == mirrored) return
         mirrored = want
         runOnUiThread { applyMirror() }
@@ -824,6 +861,9 @@ class MainActivity : ComponentActivity() {
 
         /** Where OrtEngine remembers which execution provider won its race. */
         const val ENGINE_PREFS = "engine"
+
+        /** Bump when ONNX Runtime is upgraded: the race's answer is about it too. */
+        const val MODEL_KEY_SALT = "ort1"
 
         /** How often the watchdog looks. Cheap: a subtraction, unless something is wrong. */
         const val WATCH_MS = 500L

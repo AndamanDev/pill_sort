@@ -160,6 +160,34 @@ def sheet() -> str:
     QProgressBar {{ background: {LINE}; border: none; border-radius: 5px;
                     max-height: 10px; min-height: 10px; text-align: center; }}
     QProgressBar::chunk {{ border-radius: 5px; background: {GREEN_500}; }}
+
+    /* A MESSAGE BOX HAS TO PAINT ITS OWN SURFACE.
+       Everything else on this screen sits on a card this sheet paints, so the sheet only
+       ever had to name the colour of the INK -- and dark ink is all it named. A message
+       box has no card: its background comes from the Windows palette, and on a machine
+       set to the dark theme that palette is near-black. Dark ink on a near-black panel is
+       how the change-the-number question shipped: a black rectangle with a blue question
+       mark, two ghost buttons and not one readable word between them.
+       So the surface, the ink and the buttons are all stated here rather than inherited,
+       and stated ONCE: the static helpers (QMessageBox.warning) build their own box that
+       no call site can reach with setStyleSheet, and those were just as unreadable. */
+    QMessageBox {{ background: {SURFACE}; }}
+    QMessageBox QLabel {{ background: transparent; color: {INK};
+                          font-size: 19px; }}
+    QMessageBox QPushButton {{ background: {BG}; color: {INK};
+                               border: 1px solid {LINE_STRONG};
+                               border-radius: {R_MD}px; padding: 10px 20px;
+                               font-size: 19px; font-weight: 600; min-width: 150px; }}
+    QMessageBox QPushButton:hover {{ border-color: {GREEN_500};
+                                     background: {GREEN_TINT}; color: {GREEN_700}; }}
+    QMessageBox QPushButton:pressed {{ background: {LINE}; }}
+    /* The default button is the SAFE answer everywhere this app asks a question -- keep
+       the number, go back and pour more, cancel the delete -- so the one that is filled
+       in and obvious is also the one that costs nothing. */
+    QMessageBox QPushButton:default {{ background: {GREEN_700}; color: #ffffff;
+                                       border-color: {GREEN_900}; }}
+    QMessageBox QPushButton:default:hover {{ background: {GREEN_500};
+                                             color: #ffffff; }}
     """
 
 

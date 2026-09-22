@@ -40,14 +40,26 @@ SETTLE = 2
 
 #: The floor on the gap between forward passes. Not a frame count: a camera that gives
 #: 30fps and one that gives 12 would otherwise be counting at very different rates.
-DETECT_EVERY = 0.25
+#:
+#: IT WAS 0.25 AND THAT WAS A CEILING ON THE WHOLE APP. A quarter of a second between
+#: passes is four counts a second and not one more, however quick the model is -- so the
+#: export that halved the forward pass bought exactly nothing an operator could see. The
+#: floor is now low enough to stop a runaway on hardware nobody has yet and no lower; what
+#: governs the rate is DETECT_DUTY, which is the rule that was always meant to.
+DETECT_EVERY = 0.05
 
 #: And the real rule: never spend more than this fraction of the thread on the model.
 #: The analyser thread also converts every camera buffer and composes the screen, and a
-#: model that takes a second gets a second of quiet afterwards -- otherwise it is always
-#: running, the touch handler waits behind it, and the count arrives later than if it had
-#: been asked for half as often.
-DETECT_DUTY = 0.5
+#: model that takes a second gets a rest afterwards -- otherwise it is always running, the
+#: touch handler waits behind it, and the count arrives later than if it had been asked
+#: for half as often.
+#:
+#: 0.7, UP FROM 0.5, AND ONLY BECAUSE THE GAP IS NOW MEASURED HONESTLY. See below: the
+#: stamp used to go on before the pass rather than after it, so the share this asks for
+#: was never the share it got. At 0.7 a pass of 125 ms is followed by 54 ms of quiet --
+#: more than the 20 ms a composed screen costs, with room for a tap -- and the count
+#: arrives 5.6 times a second instead of 4.
+DETECT_DUTY = 0.7
 
 
 def _report(exc):
@@ -84,7 +96,19 @@ def start(assets_dir: str, records_dir: str, ort,
 
     os.makedirs(records_dir, exist_ok=True)
     _S["ort"] = ort
-    _S["engine"] = Engine(kotlin=_Forward(ort), conf=0.45, iou=0.4)
+    # THE SHAPE COMES FROM THE GRAPH, not from a constant that matches whichever export
+    # was shipped last. `hw=None` falls back to engine.INPUT_HW, which is 480x640 -- right
+    # for one file and silently wrong for every other, in a way that shows up as a tensor
+    # error on every frame.
+    hw = None
+    try:
+        hw = (int(ort.inputHeight()), int(ort.inputWidth()))
+    except Exception:                                               # noqa: BLE001
+        try:
+            hw = (int(ort.imgsz()), int(ort.imgsz()))
+        except Exception:                                           # noqa: BLE001
+            hw = None
+    _S["engine"] = Engine(kotlin=_Forward(ort), conf=0.45, iou=0.4, hw=hw)
     _S["screen"] = Screen(assets_dir, records_dir)
     _S["cv2"] = cv2
     _S["frame"] = None
@@ -95,6 +119,9 @@ def start(assets_dir: str, records_dir: str, ort,
     _S["last_frame_at"] = time.time()
     _S["error"] = ""
     _S["pane"] = pane_out()
+    #: The shape of the hole the video is shown in. _to_bgr crops every frame to it.
+    _S["pane_ratio"] = screen_mod.PANE[2] / float(screen_mod.PANE[3])
+    _S["geometry"] = ""                 # what the camera actually delivered, said once
     _S["last_key"] = None
     # WHICH KERNELS THE MODEL IS ACTUALLY RUNNING ON, on the screen rather than in a log.
     # OrtEngine tries XNNPACK first and falls back to the plain CPU provider if the AAR
@@ -109,6 +136,12 @@ def start(assets_dir: str, records_dir: str, ort,
         except Exception:                                           # noqa: BLE001
             _S["provider"] = "?"
     _S["screen"].provider = _S["provider"]
+    # What the race clocked the winner at, so the footer can say it. Best effort: an
+    # engine that was not raced reports 0 and the footer simply leaves it out.
+    try:
+        _S["screen"].provider_ms = float(ort.providerMs)
+    except Exception:                                               # noqa: BLE001
+        _S["screen"].provider_ms = 0.0
     # The hole the CameraX preview shows through. Kotlin places its surface there and
     # builds a ViewPort from the same rectangle, which is what keeps the marks on the
     # pills: the analysed image and the displayed one end up being one picture.
@@ -118,7 +151,8 @@ def start(assets_dir: str, records_dir: str, ort,
     # _S["pane"] above raised UnboundLocalError before the camera ever opened -- and the
     # only place that showed was a phone, saying "เริ่มระบบไม่สำเร็จ".
     return json.dumps({"width": OUT_W, "height": OUT_H, "pane": pane_out(),
-                       "records": records_dir, "flip": bool(_S["screen"].flip)})
+                       "records": records_dir, "flip": bool(_S["screen"].flip),
+                       "model": "x".join(str(v) for v in _S["engine"].hw)})
 
 
 class _Forward:
@@ -178,15 +212,29 @@ def frame(rgba: bytes, width: int, height: int, row_stride: int, rotation: int,
         _S["settle"] = SETTLE
     screen.moving = moved
 
+    # THE GAP RUNS FROM THE END OF THE LAST PASS, not from its beginning.
+    #
+    # It used to be stamped before the model ran, which quietly turned the duty rule into
+    # no rule at all: a pass costing as much as the gap finished exactly when the next one
+    # became due, so they ran back to back and the model had the worker thread to itself
+    # for ever. On a handset with the old 480x640 export -- a pass of about 250 ms against
+    # a 250 ms floor -- that was every frame of every session. The screen was drawn and
+    # every tap was answered in whatever time a saturated thread could spare, which is the
+    # lag an operator feels while the number beside it arrives perfectly promptly.
+    #
+    # One line, and the difference between a rule and a comment describing one.
     gap = max(DETECT_EVERY, _S.get("detect_cost", 0.0) * (1 - DETECT_DUTY) / DETECT_DUTY)
     due = now - _S.get("last_detect", -9e9) >= gap
     if due and (moved or _S.get("settle", SETTLE) > 0):
         if not moved:
             _S["settle"] = _S.get("settle", SETTLE) - 1
-        _S["last_detect"] = now
         try:
             boxes, confs = _S["engine"].detect(bgr)
             _S["boxes"], _S["confs"] = boxes, confs
+            # NEW BOXES, SO THE SCREEN OWES A REDRAW. state_key watches this; without it a
+            # tray that slides across the bench keeps its old dots, because the count it
+            # compares on did not change. One integer, on the pass that produced them.
+            screen.marks_at = screen.marks_at + 1
             _S["error"] = ""
         except Exception as exc:                                    # noqa: BLE001
             # Kotlin's thread is calling this. Without the catch the exception is logged
@@ -199,6 +247,8 @@ def frame(rgba: bytes, width: int, height: int, row_stride: int, rotation: int,
             _report(exc)
         _S["ms"] = (time.perf_counter() - now) * 1000
         _S["detect_cost"] = _S["ms"] / 1000.0
+        # Stamped HERE, with the pass paid for. See the note above the gap.
+        _S["last_detect"] = time.perf_counter()
 
     _S["count"] = _count_inside()
 
@@ -285,7 +335,10 @@ def touch(phase: str, x: int, y: int) -> str:
     # only one of those and they disagree, with every mark landing on the mirror image of
     # the tablet it belongs to -- which is worse than the mirrored picture it set out to fix.
     return json.dumps({"target": screen.target, "page": screen.page,
-                       "flip": bool(screen.flip)})
+                       "flip": bool(screen.flip),
+                       # The second tap on the header's cross. Python cannot close a
+                       # window; the activity can, and this is the only line that asks it.
+                       "quit": bool(screen.quitting)})
 
 
 # --------------------------------------------------------------------------- helpers --
@@ -369,6 +422,52 @@ def _to_bgr(rgba, width, height, row_stride, rotation, crop_l, crop_t, crop_r, c
         bgr = cv2.rotate(bgr, cv2.ROTATE_180)
     elif rotation == 270:
         bgr = cv2.rotate(bgr, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
+    # CROPPED TO THE SHAPE OF THE HOLE IT WILL BE SHOWN IN, and this is the fix for marks
+    # that sat beside their tablets rather than on them.
+    #
+    # The video on screen is CameraX's preview surface, and PreviewView is FILL_CENTER: it
+    # scales the frame to COVER the pane and throws away whatever hangs over the sides.
+    # screen.spot() maps a detection onto that same pane. The two agree only while the
+    # frame and the pane are the same shape -- and when they are not, the disagreement is
+    # ZERO IN THE MIDDLE and grows towards the edges, which is why this reads as "the
+    # counting is a bit off" rather than as a broken transform. Measured against this
+    # pane: a 16:9 frame puts a mark 163 pixels from its tablet at the edge of the tray,
+    # where a tablet is 51 pixels across. Three tablets out, and dead right in the centre.
+    #
+    # THE VIEWPORT IS SUPPOSED TO PREVENT THIS and mostly does: MainActivity puts the
+    # preview and the analysis in one UseCaseGroup with a ViewPort of the pane's ratio, and
+    # CameraX then hands both the same cropRect. But setTargetResolution is best-effort, a
+    # ViewPort is a request the camera HAL can only approximate, and a board whose camera
+    # answers an aspect nobody asked for leaves the app silently miscounting where the
+    # operator can see it and not believe it. Cropping here needs nothing from the HAL.
+    #
+    # It also makes the COUNT honest. Anything outside this crop is off the screen, so a
+    # tablet there could be counted and never seen -- a number the operator cannot check
+    # against the picture beside it, which is the one thing this screen exists to allow.
+    want = _S.get("pane_ratio")
+    if want:
+        h, w = bgr.shape[:2]
+        have = w / float(h) if h else want
+        if abs(have - want) > 0.002:
+            if have > want:                     # too wide: take a column from the middle
+                keep = max(16, int(round(h * want)))
+                left = max(0, (w - keep) // 2)
+                bgr = np.ascontiguousarray(bgr[:, left:left + keep])
+            else:                               # too tall: take a band from the middle
+                keep = max(16, int(round(w / want)))
+                top = max(0, (h - keep) // 2)
+                bgr = np.ascontiguousarray(bgr[top:top + keep])
+            if not _S.get("geometry"):
+                # Said ONCE, and on the screen rather than only in a log, because it is
+                # the difference between "the ViewPort worked" and "it did not" and
+                # nobody can read logcat from a bench.
+                _S["geometry"] = (f"camera {w}x{h} ({have:.3f}) -> "
+                                  f"{bgr.shape[1]}x{bgr.shape[0]} ({want:.3f})")
+                print("PILLCOUNT GEOMETRY", _S["geometry"])
+        elif not _S.get("geometry"):
+            _S["geometry"] = f"camera {w}x{h} ({have:.3f}) matches the pane"
+            print("PILLCOUNT GEOMETRY", _S["geometry"])
 
     # THE MIRROR IS NOT DONE HERE, and it was, for a while. Flipping the frame gives the
     # detector a different image: measured on this bench it moved the count by as much as

@@ -37,7 +37,9 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(MODEL3, "android", "app", "src", "main", "python"))
 
 ASSETS = os.path.join(MODEL3, "phone", "assets")
-WEIGHTS = os.path.join(MODEL3, "weights", "pillcount-det-v3-480x640.onnx")
+# The export the APK carries -- see the table in android/app/build.gradle. Kept in step
+# by hand, and the geometry line this prints says which shape actually ran.
+WEIGHTS = os.path.join(MODEL3, "weights", "v3-320x416.onnx")
 
 
 class Ort:
@@ -58,6 +60,15 @@ class Ort:
 
     def imgsz(self):
         return self.shape[2]
+
+    # The two OrtEngine.kt exposes, so the bridge asks the graph here exactly as it does
+    # on a handset. Without them this stood in for a Kotlin object that had grown a pair
+    # of methods, and the one line that matters -- the letterbox shape -- went untested.
+    def inputHeight(self):
+        return self.shape[2]
+
+    def inputWidth(self):
+        return self.shape[3]
 
     def shapes(self):
         return self._last
@@ -208,17 +219,27 @@ def main():
     # has now caught it in itself.
     from model3.phone.screen import H as DH, OUT_H, OUT_W, W as DW
 
-    for want in ("target+", "preset60", "records", "back"):
+    # "target+" OPENS THE PAD now rather than stepping the number, and the pad is modal --
+    # every tap outside it is swallowed on purpose. So the run closes it again before
+    # going on, or everything after this would be testing the backdrop.
+    for want in ("target+", "key-close", "preset60", "records", "back"):
         rect = next((r for n, r in screen.hits if n == want), None)
         if rect is None:
             print(f"  ไม่พบปุ่ม {want} บนหน้านี้")
             continue
         x = (rect[0] + rect[2] / 2) * OUT_W / DW
         y = (rect[1] + rect[3] / 2) * OUT_H / DH
-        before = (screen.target, screen.page)
+        before = (screen.target, screen.page, screen.typing)
         app.touch("down", x, y)
         app.touch("up", x, y)
-        print(f"  แตะ {want}: {before} -> {(screen.target, screen.page)}")
+        after = (screen.target, screen.page, screen.typing)
+        print(f"  แตะ {want}: {before} -> {after}")
+        assert after != before, f"ปุ่ม {want} ไม่ทำอะไรเลย"
+        # The hits are the rectangles the LAST composed frame drew, and the pad changes
+        # them: re-draw before looking for the next control, or its rect is the one from
+        # the screen underneath.
+        app._S["last_key"] = None
+        app.frame(rgba, fw, fh, stride, 0, 0, 0, 0, 0)
         app._S["last_key"] = None
         app.frame(rgba, fw, fh, stride, 0, 0, 0, 0, 0)
 
@@ -243,6 +264,10 @@ def main():
     app.frame(rgba, fw, fh, stride, 0, 0, 0, 0, 0)
     print(f"  กล้องกลับมา:    ห้ามบันทึกว่า {screen.blocked!r}")
     assert "หยุด" not in screen.blocked, "กล้องกลับมาแล้วยังบันทึกไม่ได้"
+    # WITH NO REGION DRAWN, saving is refused for a different reason, and that is the
+    # point: counting the whole picture takes in the bench, the operator's hands and the
+    # next tray along. The run has not drawn one yet, so this is what it should say.
+    assert "กรอบนับ" in screen.blocked, "ไม่มีกรอบนับแล้วยังยอมให้บันทึก"
 
     # A PRESS THAT WOBBLES IS STILL A PRESS. Every tap in the loop above goes down and
     # up on the same pixel, which no thumb has ever done; the screen used to throw away
@@ -251,15 +276,18 @@ def main():
     # instead. On the counting screen there is nothing to scroll and nothing to keep it
     # from swallowing presses, which is what "กดจำนวนไม่ค่อยติด" was.
     screen.page = "count"
-    before_target = screen.target
+    screen.typing = None
     rect = next(r for n, r in screen.hits if n == "target+")
     tx = (rect[0] + rect[2] / 2) * OUT_W / DW
     ty = (rect[1] + rect[3] / 2) * OUT_H / DH
     app.touch("down", tx, ty)
     app.touch("move", tx + 9, ty + 26)          # a thumb rolling on the glass
     app.touch("up", tx + 9, ty + 26)
-    print(f"  กดแบบนิ้วขยับ: จำนวน {before_target} -> {screen.target}")
-    assert screen.target == before_target + 1, "นิ้วขยับนิดเดียวแล้วปุ่มไม่ติด"
+    # "ป้อนจำนวน" raises the pad rather than stepping the number, so the pad being up is
+    # what proves the press landed.
+    print(f"  กดแบบนิ้วขยับ: แป้นตัวเลข {screen.typing!r}")
+    assert screen.typing == "", "นิ้วขยับนิดเดียวแล้วปุ่มไม่ติด"
+    screen.typing = None
     app._S["last_key"] = None
     app.frame(rgba, fw, fh, stride, 0, 0, 0, 0, 0)
 

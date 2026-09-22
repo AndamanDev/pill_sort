@@ -187,9 +187,76 @@ copy {
     into "${buildDir}/androidAssets/art"
 }
 copy {
-    // The 480x640 export, which is the shape the bench runs -- see
-    // model3/phone/engine.py for what a square one costs.
-    from("${projectRoot}/weights") { include "pillcount-det-v3-480x640.onnx" }
+    // WHICH EXPORT THE PHONE CARRIES, and the answer stopped being "the one the bench
+    // runs" when it was measured against the clock a handset actually has.
+    //
+    // The bench runs 480x640 because that is what its camera hands ultralytics. A phone
+    // has a tenth of the CPU and every millisecond of a forward pass is a millisecond the
+    // number is out of date. Measured over forty frames of one tray, and then over the
+    // same tray shot from further and further back:
+    //
+    //   export     speed   tray filling  100%  85%  70%  55%  40%   spread
+    //   480x640    1.00x                   61   61   61   61   54     0
+    //   384x512    1.36x                   61   61   61   61   61     0
+    //   320x416    1.88x                   61   61   61   61   59     0
+    //   256x352    2.67x                   61   61   61   61   10     0
+    //
+    // 256x352 is the trap. It is the fastest, it reads the tray perfectly at every
+    // working distance, and then it falls off a cliff -- 10 tablets of 61 -- the day
+    // somebody moves the phone back. A number that is right until it is catastrophically
+    // wrong, with nothing on screen to say which.
+    //
+    // 320x416 is nearly twice the speed and is never WORSE than the shipped export at any
+    // distance measured, including the one where the shipped export has already started
+    // missing tablets. That is not a trade; both figures move the right way.
+    //
+    // AND THEN INT8, which is a second change on top of that one and a bigger one.
+    //
+    // The bench measured 556 ms a frame on an empty tray. A YOLO11n at this size is about
+    // 0.85 GFLOPs and four A55 cores should manage it in 100-200, so most of that is the
+    // float32 graph running on kernels nobody optimised for it. int8 is what XNNPACK has
+    // hand-written ARM kernels for, and it is the ONLY form NNAPI can hand to the RK3566's
+    // 0.8 TOPS NPU -- that silicon is integer, and a float graph offered to it comes back
+    // on NNAPI's own fallback path, which is how a session can build fine and still be
+    // slower than the CPU. OrtEngine races all three providers, so whichever wins, wins.
+    //
+    // Quantised STATICALLY, in QDQ form, calibrated on 38 frames of this bench's own tray
+    // -- including the tray shot small, where int8 gives out first. Measured against the
+    // float export it replaces, over 40 frames of one tray and then the same tray at five
+    // distances:
+    //
+    //   export                 MB    median  spread   100%  85%  70%  55%  40%
+    //   float32 320x416      10.5        61       0     61   61   61   61   59
+    //   int8 per-channel      3.1        61       0     61   61   61   61   59
+    //   int8 per-tensor       3.0        61       1     61   61   61   61   59
+    //
+    // Per-channel, because per-tensor loses the steadiness -- a spread of 1 is a number
+    // that flickers, and this app asks the operator to wait for it to hold still.
+    //
+    // AND IT KILLED THE APP ON THE BOARD, which is why the line below says float32.
+    //
+    // Shipped as int8, DrugCount closed the moment the loading screen finished -- no error
+    // dialog, no message, the process simply gone. Every Java fault in this activity is
+    // caught and put on screen (see boot()'s catch), so a silent disappearance is a native
+    // crash: something under ONNX Runtime took the process down with it.
+    //
+    // THE TIMING NAMES THE MOMENT. The provider race runs during loading, on a blob of
+    // zeros. What happens when loading FINISHES is the first forward pass on a real camera
+    // frame, through whichever provider won -- most likely NNAPI, since that is the one
+    // that hands a quantised graph to a vendor driver this app has never seen.
+    //
+    // The int8 export itself is not in doubt as arithmetic: measured here it reads the
+    // tray at 61 with a spread of 0 and matches the float export at every distance. What
+    // is in doubt is what the board's driver does with it, and that cannot be answered
+    // from a desk. It stays in weights/, built and measured, for a retry once the app can
+    // survive a provider that dies -- see the note in OrtEngine.kt about the race, which
+    // catches a provider that is SLOW and cannot catch one that is fatal.
+    //
+    // To go back, put the file name below back to v3-320x416.onnx, or all the way to
+    // pillcount-det-v3-480x640.onnx. Nothing else needs changing: OrtEngine reads the
+    // shape off the graph and hands it to the letterbox, so the export is the only thing
+    // that knows its own size.
+    from("${projectRoot}/weights") { include "v3-320x416.onnx" }
     into "${buildDir}/androidAssets/model"
     rename { "pillcount-det-v3.onnx" }
 }

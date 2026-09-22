@@ -50,11 +50,14 @@ def view_path(folder):
 def load_flip(folder) -> bool:
     """Whether this camera's picture is mirrored. A FILE OF ITS OWN, beside the region.
 
-    ON UNTIL SOMEBODY TURNS IT OFF. A webcam and a phone camera are both built to be
-    pointed at a face, and both hand over a mirror image because that is what a face
-    expects to see; a tray does not. Measured on this bench, both screens showed the tray
-    the wrong way round, so the setting that matches the hardware is the one that should
-    need no press -- and the press is there for a camera that does not mirror.
+    OFF UNTIL SOMEBODY TURNS IT ON, and the default moved here from the other end.
+    It was briefly on, on the strength of a bench report that the picture looked mirrored
+    -- which turned out to be this instead: the marks were computed by stretching the
+    frame onto the video pane while the surface underneath centre-crops it, so every mark
+    sat right in the middle of the tray and further and further out towards the rim. A
+    dot on the wrong side of a pill at the left edge of the tray reads as a mirrored
+    picture, and it was not one. CameraX's back camera does not mirror anything, so off is
+    what the hardware does; the button is for a lens that disagrees.
 
     Not a field in roi.json, which is where it nearly went. Clearing the region deletes
     that file, and somebody who redraws the tray has not asked for the picture to turn
@@ -63,9 +66,9 @@ def load_flip(folder) -> bool:
     """
     try:
         with open(view_path(folder), encoding="utf-8") as fh:
-            return bool(json.load(fh).get("flip", True))
+            return bool(json.load(fh).get("flip", False))
     except Exception:                                               # noqa: BLE001
-        return True
+        return False
 
 
 def save_flip(folder, flip):
