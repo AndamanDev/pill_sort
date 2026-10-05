@@ -34,3 +34,6 @@ desktop.ini
 
 # ตั้งค่า Claude Code เฉพาะเครื่องนี้
 .claude/settings.local.json
+
+# Gradle that build.ps1 downloads when no vendored copy is found
+model3/android/vendor/

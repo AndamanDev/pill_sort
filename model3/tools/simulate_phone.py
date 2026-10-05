@@ -359,6 +359,7 @@ def main():
     from model3.phone.screen import pane_out, Screen as Fresh
 
     screen.page = "count"
+    screen.setup_open()                 # the region is set in the camera settings
     screen.arming = True
     screen.pending = []
     # pane_out(), not PANE. Android sends touches in the coordinates of the bitmap it was
@@ -372,6 +373,7 @@ def main():
     for tx, ty in corners:
         screen.touch("down", tx, ty, (480, 640, 3))
         screen.touch("up", tx, ty, (480, 640, 3))
+    screen.setup_save((480, 640, 3))    # and written by its บันทึก, not by the fourth corner
     kept = Fresh(ASSETS, records)
     kept.compose(cv2.resize(frames[0], (640, 480)), np.zeros((0, 4), np.float32), 0, 0.0)
     print(f"  กรอบนับ: แตะ 4 มุมแล้วได้ {screen.roi is not None}   "

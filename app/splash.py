@@ -22,6 +22,22 @@ from . import theme as T
 import os
 
 
+def model_size(path):
+    """What to ask predict() for: an .onnx's own input size, or 640 for a .pt.
+
+    AN EXPORT HAS ONE SIZE AND REFUSES ANY OTHER -- ONNX Runtime throws on the first frame
+    rather than scaling -- so it is read off the file instead of trusted to a default.
+    """
+    if not str(path).lower().endswith(".onnx"):
+        return 640
+    import onnxruntime as ort
+
+    shape = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"]) \
+        .get_inputs()[0].shape
+    h, w = shape[2], shape[3]
+    return (int(h), int(w)) if isinstance(h, int) and isinstance(w, int) else 640
+
+
 class Loader(QThread):
     """Every slow thing at start-up, off the UI thread so the splash can paint.
 
@@ -53,7 +69,9 @@ class Loader(QThread):
             if not _os.path.isfile(self.model_path):
                 self.failed.emit(f"ไม่พบไฟล์โมเดล\n{self.model_path}")
                 return
-            model = YOLO(self.model_path)
+            model = YOLO(self.model_path, task="detect")
+            if self.imgsz is None:
+                self.imgsz = model_size(self.model_path)
             self.progress.emit(60, "โหลดโมเดลตรวจจับเม็ดยา")
 
             from .worker import Capture, Infer

@@ -33,8 +33,8 @@ FRAME = np.full((480, 640, 3), 40, np.uint8)
 BOXES = np.zeros((0, 4), np.float32)
 
 print("--- with no region drawn, the screen refuses to count at all")
-check("blocked", sc.compose(FRAME, BOXES, 35, 42.0) is not None and sc.blocked,
-      "ยังไม่ได้กำหนดกรอบนับ")
+check("blocked", (sc.compose(FRAME, BOXES, 35, 42.0) is not None
+                  and sc.blocked.startswith("ยังไม่ได้กำหนดกรอบนับ")), True)
 check("and the verdict says which thing is missing",
       sc._verdict(35)[1], "ยังไม่ได้กำหนดกรอบนับ")
 
@@ -94,11 +94,12 @@ print("--- the panel still holds its controls")
 tray(35)
 PANEL = (28, 104, 772, 896)
 rects = {n: r for n, r in sc.hits if n in
-         ("target-", "target+", "type-target", "round", "reset", "roi", "save")}
-# Seven now: "roi-clear" is drawn only while corners are being placed, and
-# "ล้างกรอบ" has gone -- a region is what makes counting possible, so a
+         ("target-", "target+", "type-target", "round", "reset", "save")}
+# Six now: the region's button went to the camera settings with the zoom, and
+# "ล้างกรอบ" went before it -- a region is what makes counting possible, so a
 # control whose only effect is to remove one has no use.
-check("all seven controls drawn", len(rects), 7)
+check("all six controls drawn", len(rects), 6)
+check("and the way into the settings", "setup" in dict(sc.hits), True)
 bottom = max(r[1] + r[3] for r in rects.values())
 check("nothing past the panel", bottom <= PANEL[1] + PANEL[3], True)
 print(f"       lowest edge {bottom} vs panel bottom {PANEL[1] + PANEL[3]}")
@@ -116,7 +117,6 @@ def fits(rect, txt, px):
     return sc.text.measure(txt, px) <= rect[2] - 20
 wide = []
 for txt, px, name in ((f"เก็บรอบที่ 9", 28, "round"), ("นับใหม่", 28, "reset"), ("กดอีกครั้ง", 28, "reset"),
-                      ("กำหนดกรอบใหม่", 28, "roi"),
                       ("บันทึกผล", 38, "save"),
                       ("บันทึกว่าไม่ครบ ขาด 100", 32, "save"),
                       ("แตะอีกครั้งเพื่อบันทึก 100", 30, "save")):

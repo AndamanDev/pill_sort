@@ -1,4 +1,4 @@
-"""The screen: header, the number and its controls on the left, the camera right, footer.
+"""The screen: header, the camera on the left, the number and its controls right, footer.
 
 WRITTEN FOR A HOSPITAL DISPENSARY, which sets most of what follows. The person reading it
 is standing, their hands are busy, the room is bright, and they are checking a number they
@@ -26,11 +26,12 @@ from PySide6.QtGui import (QColor, QFont, QImage, QPainter, QPainterPath, QPen,
                            QPixmap)
 from PySide6.QtWidgets import (QFrame, QGraphicsOpacityEffect, QHBoxLayout,
                                QLabel, QLineEdit, QProgressBar, QPushButton,
-                               QSizePolicy, QVBoxLayout, QWidget)
+                               QSizePolicy, QSlider, QVBoxLayout, QWidget)
 
 from . import LOGO, RECORDS, SETTINGS
 from . import sound
 from . import theme as T
+from .worker import ZOOM_MAX, ZOOM_MIN, zoom_factor
 
 #: The marker, BGR. THE APP'S OWN GREEN, with a white rim around it.
 #:
@@ -49,11 +50,29 @@ ROI_LINE = (90, 220, 110)
 #: The rubber band while a region is being dragged. Brighter than the settled outline
 #: because for those two seconds it IS the thing being looked at.
 ROI_BAND = (140, 245, 160)
-#: The border drawn round a picture that has stopped arriving. BGR, so this is red.
-STALE_EDGE = (60, 60, 220)
+#: The border drawn round the pane once the camera has stopped. Qt, not cv2: nothing is
+#: drawn ONTO a dead picture any more, because the dead picture is not shown at all.
+DEAD_EDGE = "#dc3c3c"
+#: The pane while the camera is not working: BLACK, and the reason on it in WHITE.
+#:
+#: It used to be the last frame with a red border round it, which is a picture of a tray
+#: that is not there any more. A frozen picture is the most convincing thing on the screen
+#: -- it looks exactly like a live one, because it was one -- and an operator glancing up
+#: reads the tray, not the border. Black is the one thing a camera never produces, so it
+#: cannot be mistaken for a view of the bench, and the words are then the only thing in
+#: the pane to read. The save is blocked either way; this is about what the eye is told.
+DEAD_BG = "#000000"
+DEAD_INK = "#ffffff"
+DEAD_SUB = "#e8b4b4"
+DEAD_HEAD = "กล้องไม่ทำงาน"
+#: Two lines, and the second one is the one that stops somebody restarting the app: both
+#: machines keep asking for the camera back on their own, so a lead pushed home brings the
+#: picture back by itself. Without saying so, a black screen reads as "this is finished".
+DEAD_LINES = ("ตรวจสายกล้อง", "กำลังลองเชื่อมต่อใหม่เอง")
 
 DRAW_MS = 16                # ~60 fps repaint, independent of the model
 MIN_ROI = 40                # frame pixels; the shortest side a usable region can have
+ZOOM_STEP = 5               # one press of - or +, one arrow key; 20 presses end to end
 
 #: Widget pixels a press may travel and still count as a tap on one spot.
 #:
@@ -80,7 +99,12 @@ BANKED_OVER_NOTE = ("เก็บไปแล้ว {n} เม็ด  เกิ�
 
 #: Said until a counting region has been drawn, which is now a precondition rather than
 #: a refinement -- see the note in _tick where saving is refused.
-NO_ROI_NOTE = "ยังไม่ได้กำหนดกรอบนับ  กดกำหนดกรอบนับก่อน"
+NO_ROI_NOTE = "ยังไม่ได้กำหนดกรอบนับ  กดตั้งค่ากล้องเพื่อกำหนดกรอบ"
+#: The same fact said INSIDE the camera settings, where "กดตั้งค่ากล้อง" would send the
+#: operator to the button they have just pressed.
+SETUP_NO_ROI_NOTE = "ยังไม่มีกรอบนับ  กดกำหนดกรอบนับแล้วแตะมุมถาด 4 จุด"
+#: Why the counting buttons are dead while the camera is being set up.
+SETUP_NOTE = "กำลังตั้งค่ากล้อง  กดบันทึกหรือยกเลิกก่อน"
 #: Said when somebody reaches the save with an empty tray and nothing banked.
 NOTHING_NOTE = "ยังไม่มีเม็ดยาให้บันทึก  วางยาบนถาดก่อน"
 #: Said when somebody reaches the save without having asked for a number.
@@ -234,19 +258,44 @@ def load_flip(camera) -> bool:
     to turn round -- they would find it mirrored again with nothing on screen to explain
     why. The two settings have different lifetimes, so they get different files.
     """
-    try:
-        with open(view_path(camera), encoding="utf-8") as fh:
-            return bool(json.load(fh).get("flip", False))
-    except Exception:                                           # noqa: BLE001
-        return False
+    return bool(_load_view(camera).get("flip", False))
 
 
 def save_flip(camera, flip):
+    _save_view(camera, flip=bool(flip))
+
+
+def load_zoom(camera):
+    """The zoom this camera was left at, or None if nobody has ever moved it.
+
+    In the view file beside the flip, for the flip's reason: it describes how the camera
+    is aimed, it is set once and then left, and it outlives a cleared region.
+    """
+    z = _load_view(camera).get("zoom")
+    return int(z) if isinstance(z, (int, float)) else None
+
+
+def save_zoom(camera, zoom):
+    _save_view(camera, zoom=int(zoom))
+
+
+def _load_view(camera) -> dict:
+    try:
+        with open(view_path(camera), encoding="utf-8") as fh:
+            d = json.load(fh)
+        return d if isinstance(d, dict) else {}
+    except Exception:                                           # noqa: BLE001
+        return {}
+
+
+def _save_view(camera, **changes):
+    """MERGED, NOT REWRITTEN: one file holds both settings, and saving one must not
+    quietly put the other back to its default."""
+    d = _load_view(camera)
+    d.update(changes, camera=camera, saved=time.strftime("%Y-%m-%d %H:%M"))
     os.makedirs(SETTINGS, exist_ok=True)
     with open(view_path(camera), "w", encoding="utf-8") as fh:
-        json.dump({"camera": camera, "flip": bool(flip),
-                   "saved": time.strftime("%Y-%m-%d %H:%M")}, fh,
-                  ensure_ascii=False, indent=2)
+        json.dump(d, fh, ensure_ascii=False, indent=2)
 
 
 def load_roi(camera, size):
@@ -402,6 +451,11 @@ class CameraView(QLabel):
         self.flip = False
         self.arming = False                 # set by the window; drives the cursor
         self._press_at = None               # where the button went down, for TAP_SLOP
+        #: Set while the camera is not working, cleared by the next frame that arrives.
+        #: `_geom` is deliberately LEFT ALONE: it is the mapping the last real frame was
+        #: drawn with, and the camera that comes back is the same camera at the same size,
+        #: so a region drawn before the fault still lands where it was put.
+        self._dead = False
 
     def set_arming(self, on):
         self.arming = on
@@ -423,6 +477,8 @@ class CameraView(QLabel):
         return QSize(320, 240)
 
     def show_frame(self, bgr):
+        """A live frame. THIS IS ALSO HOW THE FAULT SCREEN GOES AWAY -- see show_dead."""
+        self._dead = False
         h, w = bgr.shape[:2]
         self._fw = w
         img = QImage(bgr.data, w, h, 3 * w, QImage.Format_BGR888)
@@ -431,6 +487,20 @@ class CameraView(QLabel):
         self._geom = ((self.width() - pix.width()) / 2,
                       (self.height() - pix.height()) / 2, pix.width() / w)
         self._pix = pix
+        self.update()
+
+    def show_dead(self):
+        """The camera has stopped. Black out the pane and say so.
+
+        NOTHING IS CLEARED BUT THE PIXMAP'S TURN TO BE PAINTED. The frame, the region and
+        the geometry all stay, so when frames start arriving again the very next
+        show_frame() puts the picture back exactly as it was, with no re-aiming and no
+        re-drawing of the counting region. That is the whole recovery path: the window
+        does not decide when the camera is better, it just stops being told it is stale.
+        """
+        if self._dead:
+            return                          # already black; do not repaint sixty times
+        self._dead = True
         self.update()
 
     def paintEvent(self, ev):
@@ -451,6 +521,8 @@ class CameraView(QLabel):
         path = QPainterPath()
         path.addRoundedRect(QRectF(self.rect()), T.R_LG, T.R_LG)
         painter.setClipPath(path)
+        if self._dead:
+            return self._paint_dead(painter)
         painter.fillRect(self.rect(), QColor(VIEW_BG))
         if self._pix is not None:
             x0, y0, _ = self._geom
@@ -459,6 +531,34 @@ class CameraView(QLabel):
         painter.setPen(QColor(T.INK_MUTED))
         painter.setFont(self.font())
         painter.drawText(self.rect(), Qt.AlignCenter, "กำลังเปิดกล้อง")
+
+    def _paint_dead(self, painter):
+        """Black, the reason in white, and the red edge the picture used to wear.
+
+        Drawn in Qt rather than into the frame with cv2, which is what makes it say
+        anything at all: cv2 has no Thai, so the old red border had to leave the words to
+        the footer -- one line of small print at the bottom of a screen whose whole point
+        is in the middle. Here the message is IN the pane, at the size of the thing it
+        replaced.
+        """
+        painter.fillRect(self.rect(), QColor(DEAD_BG))
+        pen = QPen(QColor(DEAD_EDGE))
+        pen.setWidth(10)
+        painter.setPen(pen)
+        painter.drawRoundedRect(QRectF(self.rect()).adjusted(5, 5, -5, -5),
+                                T.R_LG, T.R_LG)
+        cy = self.height() // 2
+        for text, size, colour, dy in ((DEAD_HEAD, 34, DEAD_INK, -46),
+                                       (DEAD_LINES[0], 20, DEAD_SUB, 8),
+                                       (DEAD_LINES[1], 20, DEAD_SUB, 44)):
+            font = QFont()
+            font.setFamilies(T.FONT_FAMILIES)
+            font.setPixelSize(size)
+            font.setWeight(QFont.Bold if size > 24 else QFont.Normal)
+            painter.setFont(font)
+            painter.setPen(QColor(colour))
+            painter.drawText(QRectF(0, cy + dy, self.width(), size * 1.8),
+                             Qt.AlignHCenter | Qt.AlignTop, text)
 
     def _to_frame(self, pos):
         """Widget point -> frame point, or None while nothing has been drawn yet.
@@ -773,6 +873,15 @@ class Window(QWidget):
         self.camera = camera
         self.target = int(target)
         self.arming = False
+        #: THE CAMERA IS SET UP IN A MODE OF ITS OWN, not from the counting screen. The zoom
+        #: and the region are set once, when the camera is aimed, and then left alone for
+        #: weeks; a slider and a "กำหนดกรอบ" button beside the count invited somebody to
+        #: nudge them mid-shift, and either one quietly changes which pills are counted.
+        #: So the counting panel carries neither, and "ตั้งค่ากล้อง" swaps it for a panel
+        #: that does. NOTHING IS WRITTEN UNTIL ITS บันทึก: ยกเลิก puts back the zoom and the
+        #: region exactly as they were, and closing the window mid-way leaves the files alone.
+        self.setup = False
+        self._setup_was = None              # (zoom, region) as they were when it opened
         #: COUNTS ALREADY TAKEN AND ALREADY TIPPED AWAY, in the order they were taken.
         #:
         #: The tray holds about sixty tablets before they start lying on top of one another,
@@ -801,6 +910,12 @@ class Window(QWidget):
         #:
         #: IT TOUCHES THE DRAWING AND NOTHING ELSE. See CameraView._to_frame.
         self.flip = load_flip(camera)
+        #: The zoom this camera was left at goes back on before the region is loaded, so
+        #: the region is laid over the same picture it was drawn on. See _zoom_moved.
+        self._zoom_syncing = False          # True while the slider follows the camera
+        zoom = load_zoom(camera)
+        if zoom is not None and hasattr(capture, "set_zoom"):
+            capture.set_zoom(zoom)
         self.pending = []                   # corners tapped so far, in frame pixels
         self.note = ""                      # footer message
         self._fit = None                    # the PANEL_FITS entry now applied
@@ -840,6 +955,7 @@ class Window(QWidget):
         # operator who uses both learns the layout twice and reaches wrong once.
         row.addWidget(self._camera(), 1)
         row.addWidget(self._panel(), 0)
+        row.addWidget(self._setup_card(), 0)
         root.addWidget(body, 1)
         root.addWidget(self._footer())
 
@@ -948,6 +1064,24 @@ class Window(QWidget):
             QLabel#chip {{
                 font-family: {T.FONT_STACK}; background: transparent; color: {T.INK_SOFT};
                 border: 0; padding: 0; font-size: 18px; font-weight: 600; }}
+            /* The zoom: a thick groove and a big handle, because it is worked standing up,
+               often with a glove on, and a 4px Windows slider is a target for a mouse. */
+            QSlider {{ min-height: 34px; }}
+            QSlider::groove:horizontal {{ background: {T.LINE}; height: 10px;
+                                          border-radius: 5px; }}
+            QSlider::sub-page:horizontal {{ background: {T.GREEN_500};
+                                            border-radius: 5px; }}
+            QSlider::handle:horizontal {{ background: {T.GREEN_700}; width: 30px;
+                                          margin: -10px 0; border-radius: 15px; }}
+            QSlider::handle:horizontal:hover {{ background: {T.GREEN_500}; }}
+            QPushButton#zoomstep {{
+                font-family: {T.FONT_STACK}; background: {T.SURFACE}; color: {T.GREEN_700};
+                border: 1px solid {T.LINE_STRONG}; border-radius: {T.R_MD}px;
+                font-size: 24px; font-weight: 700; min-width: 48px; min-height: 44px;
+                padding: 0; }}
+            QPushButton#zoomstep:hover {{ background: {T.GREEN_TINT};
+                                          border-color: {T.GREEN_500}; }}
+            QPushButton#zoomstep:pressed {{ background: {T.LINE}; }}
             QProgressBar {{ background: {T.LINE}; border: 0; border-radius: 6px;
                             min-height: 12px; max-height: 12px; }}
             QProgressBar::chunk {{ border-radius: 6px; background: {T.GREEN_500}; }}
@@ -981,6 +1115,15 @@ class Window(QWidget):
         # bottom of the card on a 1366x768 screen, which is the size of the bench this runs
         # on. The header is 72px of empty white and these are the only other things the
         # window does.
+        # THE CAMERA SETTINGS BESIDE THEM, for the same reason: pressed once when the
+        # camera is aimed and then left alone, which is an errand, not a counting control.
+        # Hidden while the settings are open -- their panel has its own บันทึก and ยกเลิก,
+        # and a third way out would be a question.
+        self.setup_btn = sized(QPushButton("ตั้งค่ากล้อง"), 19)
+        self.setup_btn.setObjectName("topbtn")
+        self.setup_btn.clicked.connect(self._setup_open)
+        lay.addWidget(self.setup_btn)
+        lay.addSpacing(12)
         self.list_btn = sized(QPushButton("ดูรายการที่บันทึก"), 19)
         self.list_btn.setObjectName("topbtn")
         self.list_btn.clicked.connect(self._show_records)
@@ -1117,27 +1260,11 @@ class Window(QWidget):
         rrow.addWidget(self.reset_btn)
         lay.addLayout(rrow)
 
-        # ONE ROW, as on the phone. The two are a pair -- set the frame, clear the frame
-        # -- and a full-width button each read as two unrelated commands while spending
-        # two rows of panel to say it. Side by side they are visibly one control with two
-        # ends, and the row they give back goes to the space above the save button, which
-        # is what keeps save from being just another button in a stack.
-        frow = QHBoxLayout()
-        frow.setSpacing(10)
+        # THE REGION IS NOT SET FROM HERE ANY MORE. "กำหนดกรอบนับ" sat in this row, and
+        # it is a thing done once when the camera is aimed -- beside the save button it was
+        # one more control to rule out in a hurry, and one slip from moving which pills
+        # are counted. It lives in the camera settings now, with the zoom. See _setup_card.
 
-        self.roi_btn = sized(QPushButton("กำหนดกรอบนับ"), 19)
-        self.roi_btn.setObjectName("ghost")
-        self.roi_btn.clicked.connect(self._roi_clicked)
-        frow.addWidget(self.roi_btn)
-
-        # THERE IS NO SECOND BUTTON IN THIS ROW ANY MORE. "ล้างกรอบ" went when a region
-        # became the thing that makes counting possible -- a control whose only use is to
-        # break the screen -- and "ถอยจุด" went after it: four taps is a short enough
-        # gesture that starting it again costs less than a second control to understand,
-        # and the button beside it already says ยกเลิก while they are going down. A right
-        # click still takes the last corner back, which is a mouse habit rather than a
-        # control, and costs nobody a glance.
-        lay.addLayout(frow)
 
         self.save_btn = sized(QPushButton("บันทึกผล"), 22, QFont.Bold)
         self.save_btn.setObjectName("primary")
@@ -1147,47 +1274,187 @@ class Window(QWidget):
 
     # ------------------------------------------------------------------------- camera
     def _camera(self):
-        card = _card()
-        lay = QVBoxLayout(card)
-        lay.setContentsMargins(20, 20, 20, 20)
-        lay.setSpacing(12)
-        # A header row rather than a bare caption: the two things worth knowing ABOUT the
-        # picture -- which part of it is being counted, and how long the model is taking --
-        # belong on the picture, not buried in the footer with the settings.
-        head = QHBoxLayout()
-        head.setSpacing(24)                 # the padding the chips used to carry
-        head.addWidget(styled(QLabel("ภาพจากกล้อง"), 19, QFont.DemiBold, T.INK_SOFT))
-        head.addStretch(1)
-        # THE FLIP LIVES ON THE PICTURE'S CARD, not in the counting panel. It is a property
-        # of the picture rather than of the count, it is set once when the camera is aimed
-        # and then never again, and the panel has no row to spare -- the header of this card
-        # is the only place on the screen with room that is also the right place.
+        """The live picture, and nothing else: the whole left of the window.
+
+        IT USED TO BE A CARD with a caption row -- "ภาพจากกล้อง", which part of it was
+        counted, the model's time, and the settings button -- and every one of those took
+        height from the one thing on the left anybody looks at. The caption said what the
+        picture obviously is; the region is drawn ON the picture; the time went to the
+        footer with the other numbers nobody reads while counting; the settings went to
+        the header with the other errands. What is left is the pane, edge to edge.
+
+        STILL NEVER CROPPED TO FILL: the left side is dark, and where the window's shape is
+        not the camera's the difference is a band of that dark rather than the edge of the
+        tray. See CameraView.paintEvent.
+        """
         # The flip button has gone from both screens. The mechanism stays -- see
         # CameraView._to_frame -- because a camera that really is mirrored still has to be
         # undoable, and load_flip reads a file that can be edited. It is simply not a thing
-        # a bench needs on screen every day.
+        # a bench needs on screen every day. Kept as a hidden widget for _flip_clicked.
         self.flip_btn = sized(QPushButton("พลิกภาพ"), 19)
+        self.flip_btn.setParent(self)
         self.flip_btn.setObjectName("topbtn")
-        self.flip_btn.setVisible(False)
-        # CHECKABLE, so the button says which way the picture is rather than only offering
-        # to change it. Somebody who walks up to this bench cannot tell a mirrored tray
-        # from an unmirrored one by looking at the tray -- both are a tray from above --
-        # and a plain button would leave them pressing it twice to find out.
         self.flip_btn.setCheckable(True)
         self.flip_btn.setChecked(self.flip)
         self.flip_btn.clicked.connect(self._flip_clicked)
-
-        self.roi_chip = styled(QLabel(""), 18, QFont.DemiBold)
-        head.addWidget(self.roi_chip)
-        self.ms_chip = styled(QLabel(""), 18, QFont.DemiBold)
-        head.addWidget(self.ms_chip)
-        lay.addLayout(head)
+        self.flip_btn.setVisible(False)
 
         self.view = CameraView()
         self.view.tapped.connect(self._corner)
         self.view.cancelled.connect(self._corner_undo)
-        lay.addWidget(self.view, 1)
+        return self.view
+
+    def _zoom_bar(self):
+        """The camera's zoom: -, a slider, +, and how close it is. In the settings panel.
+
+        It used to sit under the picture, on the counting screen, and was moved for the
+        reason the region button was: it is set once when the camera is aimed, and a
+        slider within reach of the count is a slider that gets nudged. Replaced, when the
+        capture says it cannot zoom, by a line saying so -- a greyed control would be a
+        question nobody can answer.
+        """
+        self.zoom_row = QWidget()
+        row = QHBoxLayout(self.zoom_row)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(10)
+        self.zoom_out = sized(QPushButton("−"), 22)
+        self.zoom_in = sized(QPushButton("+"), 22)
+        self.zoom_slider = QSlider(Qt.Horizontal)
+        self.zoom_slider.setRange(ZOOM_MIN, ZOOM_MAX)
+        self.zoom_slider.setSingleStep(ZOOM_STEP)
+        self.zoom_slider.setPageStep(ZOOM_STEP)
+        self.zoom_val = styled(QLabel(""), 19, QFont.DemiBold, T.INK)
+        self.zoom_val.setMinimumWidth(56)
+        self.zoom_val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        for b, d in ((self.zoom_out, -ZOOM_STEP), (self.zoom_in, ZOOM_STEP)):
+            b.setObjectName("zoomstep")
+            b.setAutoRepeat(True)           # held down, it keeps going
+            b.clicked.connect(lambda _=False, d=d: self.zoom_slider.setValue(
+                self.zoom_slider.value() + d))
+        row.addWidget(self.zoom_out)
+        row.addWidget(self.zoom_slider, 1)
+        row.addWidget(self.zoom_in)
+        row.addWidget(self.zoom_val)
+        self.zoom_slider.valueChanged.connect(self._zoom_moved)
+        self.zoom_row.setVisible(False)     # until the camera says it has a zoom
+        return self.zoom_row
+
+    # ------------------------------------------------------------------ camera setup
+    def _setup_card(self):
+        """The camera settings: the zoom, then the region, then บันทึก or ยกเลิก.
+
+        IN THAT ORDER, AND NUMBERED, because the order is not a matter of taste. The region
+        is in frame pixels and the zoom changes what a frame pixel is, so a region drawn
+        before the zoom is moved is thrown away by moving it. Zoom first, outline second,
+        and the outline is always drawn on the picture it will be used with.
+
+        IT TAKES THE COUNTING PANEL'S PLACE rather than opening a window over the picture,
+        because the picture is what is being set: the zoom has to be watched as it moves
+        and the corners are tapped on it.
+        """
+        card = _card()
+        card.setFixedWidth(430)
+        card.setVisible(False)
+        self.setup_panel = card
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(24, 24, 24, 24)
+        lay.setSpacing(12)
+
+        lay.addWidget(styled(QLabel("ตั้งค่ากล้อง"), 26, QFont.Bold, T.INK))
+        hint = styled(QLabel("ปรับซูมก่อน แล้วจึงกำหนดกรอบนับ  เสร็จแล้วกดบันทึก"),
+                      17, QFont.Normal, T.INK_MUTED)
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+        lay.addSpacing(6)
+        lay.addWidget(_rule())
+
+        lay.addWidget(styled(QLabel("1  ระยะซูมภาพ"), 20, QFont.DemiBold, T.INK_SOFT))
+        lay.addWidget(self._zoom_bar())
+        self.no_zoom_lbl = styled(QLabel("กล้องนี้ปรับซูมไม่ได้"), 18, QFont.Normal,
+                                  T.INK_MUTED)
+        lay.addWidget(self.no_zoom_lbl)
+        lay.addSpacing(6)
+        lay.addWidget(_rule())
+
+        lay.addWidget(styled(QLabel("2  พื้นที่นับ"), 20, QFont.DemiBold, T.INK_SOFT))
+        self.roi_state = styled(QLabel(""), 18, QFont.Normal, T.INK_MUTED)
+        self.roi_state.setWordWrap(True)
+        lay.addWidget(self.roi_state)
+        self.roi_btn = sized(QPushButton("กำหนดกรอบนับ"), 19)
+        self.roi_btn.setObjectName("ghost")
+        self.roi_btn.clicked.connect(self._roi_clicked)
+        lay.addWidget(self.roi_btn)
+        lay.addStretch(1)
+
+        brow = QHBoxLayout()
+        brow.setSpacing(10)
+        self.setup_cancel_btn = sized(QPushButton("ยกเลิก"), 19)
+        self.setup_cancel_btn.setObjectName("ghost")
+        self.setup_cancel_btn.clicked.connect(self._setup_cancel)
+        brow.addWidget(self.setup_cancel_btn, 1)
+        self.setup_save_btn = sized(QPushButton("บันทึก"), 22, QFont.Bold)
+        self.setup_save_btn.setObjectName("primary")
+        self.setup_save_btn.clicked.connect(self._setup_save)
+        brow.addWidget(self.setup_save_btn, 2)
+        lay.addLayout(brow)
         return card
+
+    def _setup_open(self):
+        """Into the camera settings, remembering what to put back if they are cancelled."""
+        if self.setup:
+            return
+        self.setup = True
+        self._setup_was = (getattr(self.capture, "zoom", None),
+                           list(self.infer.roi) if self.infer.roi else None)
+        self.panel.setVisible(False)
+        self.setup_panel.setVisible(True)
+        self.setup_btn.setVisible(False)
+        self._disarm()
+        self.note = "ปรับซูม แล้วกำหนดกรอบนับ  เสร็จแล้วกดบันทึก"
+
+    def _setup_save(self):
+        """Write the zoom and the region, and go back to counting.
+
+        REFUSED WITHOUT A REGION. Saving none would leave a counting screen that can count
+        nothing, and the way to fix that is back in here -- so it is said here instead.
+        """
+        if not self.setup:
+            return
+        if self.arming:
+            self._roi_prompt()
+            return
+        if not self.infer.roi:
+            self.note = "ยังไม่มีกรอบนับ  กำหนดกรอบนับก่อนจึงบันทึกได้"
+            return
+        if getattr(self.capture, "zoom_ok", False):
+            save_zoom(self.camera, self.zoom_slider.value())
+        self._persist()
+        self._setup_close()
+        self.note = "บันทึกการตั้งค่ากล้องแล้ว"
+
+    def _setup_cancel(self):
+        """Put the zoom and the region back exactly as they were, and go back to counting."""
+        if not self.setup:
+            return
+        zoom, roi = self._setup_was or (None, None)
+        self._disarm()
+        if (zoom is not None and zoom != getattr(self.capture, "zoom", None)
+                and hasattr(self.capture, "set_zoom")):
+            self.capture.set_zoom(zoom)
+            self._zoom_syncing = True       # the slider follows; it does not drive
+            self.zoom_slider.setValue(zoom)
+            self._zoom_syncing = False
+        self.infer.roi = roi
+        self._setup_close()
+        self.note = "ยกเลิกแล้ว  ใช้การตั้งค่ากล้องเดิม"
+
+    def _setup_close(self):
+        self.setup = False
+        self._setup_was = None
+        self._disarm()
+        self.setup_panel.setVisible(False)
+        self.panel.setVisible(True)
+        self.setup_btn.setVisible(True)
 
     # ------------------------------------------------------------------------- footer
     def _footer(self):
@@ -1206,6 +1473,10 @@ class Window(QWidget):
         self.note_lbl = styled(QLabel(""), 18, QFont.Bold, T.GREEN_700)
         lay.addWidget(self.note_lbl)
         lay.addStretch(1)
+        # How long the model takes. It sat on the picture's caption row, which has gone;
+        # it is a number for whoever is tuning the machine, and that is what a footer is.
+        self.ms_lbl = styled(QLabel(""), 18, QFont.Normal, T.INK_MUTED)
+        lay.addWidget(self.ms_lbl)
         self.meta_lbl = styled(QLabel(""), 18, QFont.Normal, T.INK_MUTED)
         lay.addWidget(self.meta_lbl)
         return bar
@@ -1213,15 +1484,6 @@ class Window(QWidget):
     # ------------------------------------------------------------------------ actions
     def _set_badge(self, pair):
         self.verdict.setStyleSheet(self.verdict.base + badge_css(pair))
-
-    @staticmethod
-    def _chip(label, text):
-        label.setText(text)
-        label.setObjectName("chip")
-        label.setStyleSheet("")             # let the sheet's #chip rule take over
-        label.style().unpolish(label)
-        label.style().polish(label)
-        label.setVisible(bool(text))
 
     def _meta(self):
         """The footer's right-hand side: the settings, and how much has been saved today.
@@ -1236,7 +1498,8 @@ class Window(QWidget):
             saved = 0
         self.meta_lbl.setText(
             f"conf {self.infer.conf}   iou {self.infer.iou}   "
-            f"imgsz {self.infer.imgsz}   บันทึกไว้ {saved} รายการ")
+            f"imgsz {getattr(self.infer, 'imgsz_text', self.infer.imgsz)}   "
+            f"บันทึกไว้ {saved} รายการ")
 
     # ------------------------------------------------------------------------- rounds
     def banked(self) -> int:
@@ -1375,6 +1638,51 @@ class Window(QWidget):
         self._disarm()
         self.note = "พลิกภาพซ้าย-ขวาแล้ว" if self.flip else "เลิกพลิกภาพแล้ว"
 
+    def _zoom_moved(self, value):
+        """The slider moved: tell the capture, and DROP THE REGION if there was one.
+
+        THE REGION IS IN FRAME PIXELS AND ZOOM CHANGES WHAT A FRAME PIXEL IS. Unlike the
+        flip, which this window undoes on the way back in, the zoom is applied before the
+        frame is handed out: what arrives is a different piece of the bench, and a region
+        drawn on the old one now lies across some other part of the tray -- counting the
+        wrong pills while looking exactly as right as it did a moment ago. So it goes, and
+        the settings cannot be saved until the tray is outlined again on the picture as it
+        is now.
+
+        NOTHING IS WRITTEN HERE. The zoom and the region go to disk together on the
+        settings' บันทึก, and ยกเลิก puts both back -- see _setup_save and _setup_cancel.
+        """
+        self.zoom_val.setText(f"{zoom_factor(value):.1f}×")
+        if self._zoom_syncing:
+            return
+        self.capture.set_zoom(value)
+        if self.arming:
+            self._disarm()                  # corners tapped on the old picture
+        if self.infer.roi:
+            self.infer.roi = None
+            self._disarm()
+            self.note = "ซูมแล้ว กรอบเดิมไม่ตรงกับภาพ  กำหนดกรอบใหม่"
+
+    def _sync_zoom(self):
+        """Show the slider once the camera has said it zooms, at the zoom it is at.
+
+        Asked on the repaint rather than once at start, because the answer can change: the
+        camera may be unplugged when the window opens, and a different one may be the one
+        that comes back.
+        """
+        ok = bool(getattr(self.capture, "zoom_ok", False))
+        if ok != self.zoom_row.isVisibleTo(self.setup_panel):
+            self.zoom_row.setVisible(ok)
+            self.no_zoom_lbl.setVisible(not ok)
+        z = getattr(self.capture, "zoom", None)
+        if ok and z is not None and z != self.zoom_slider.value() \
+                and not self.zoom_slider.isSliderDown():
+            self._zoom_syncing = True       # the camera's value, not a hand on the slider
+            self.zoom_slider.setValue(z)
+            self._zoom_syncing = False
+        if not self.zoom_val.text() and ok:
+            self.zoom_val.setText(f"{zoom_factor(self.zoom_slider.value()):.1f}×")
+
     def _type_target(self):
         """"ป้อนจำนวน": put the caret in the box and select what is there.
 
@@ -1387,14 +1695,19 @@ class Window(QWidget):
         self.target_edit.selectAll()
 
     def _roi_clicked(self):
-        """Start placing corners, or stop if they are already being placed."""
+        """Start placing corners, or stop if they are already being placed.
+
+        Only inside the camera settings: from anywhere else it opens them first, so a
+        region can never be changed without the บันทึก that writes it.
+        """
         if self.arming:
             self._disarm()
             return
+        self._setup_open()
         self.arming = True
         self.pending = []
         self.view.set_arming(True)
-        self.roi_btn.setText("ยกเลิก")
+        self.roi_btn.setText("หยุดวางมุม")
         self._roi_prompt()
 
     def _corner(self, x, y):
@@ -1417,9 +1730,8 @@ class Window(QWidget):
             self.note = f"มุมนี้แคบเกินไป  แตะให้ห่างจากมุมอื่นกว่า {MIN_ROI} จุดภาพ"
             return
         self.infer.roi = pts
-        self._persist()
         self._disarm()
-        self.note = "กำหนดกรอบแล้ว"
+        self.note = "กำหนดกรอบแล้ว  กดบันทึกเพื่อใช้กรอบนี้"
 
     def _corner_undo(self):
         """Right click, or the second button: the last corner back, then the whole mode."""
@@ -1462,6 +1774,12 @@ class Window(QWidget):
         press, or a later shortcut could all reach this method anyway -- and the rule that
         an over-count is not filed belongs with the writing, not with the widget.
         """
+        if self.setup:
+            # The zoom and the region on screen are not the ones in force until they are
+            # saved, and may yet be cancelled. A count filed now is a count through
+            # settings that might never have existed.
+            self.note = SETUP_NOTE
+            return
         if self.arming:
             # Mid-gesture the number on screen was measured through a region that is about
             # to be replaced. Filing it would record a figure nobody can reproduce.
@@ -1519,7 +1837,11 @@ class Window(QWidget):
             # being looked for. It is false when no target was set, because with nothing to
             # fall short OF the question does not arise.
             "short": bool(self.target and total < self.target),
-            "conf": self.infer.conf, "iou": self.infer.iou, "imgsz": self.infer.imgsz,
+            "conf": self.infer.conf, "iou": self.infer.iou,
+            "imgsz": getattr(self.infer, "imgsz_text", self.infer.imgsz),
+            # How close the camera was, because the same tray at two zooms is two different
+            # pictures and a reader comparing records needs to know which they are holding.
+            "zoom": getattr(self.capture, "zoom", None),
             "roi": [[int(x), int(y)] for x, y in self.infer.roi] if self.infer.roi else None,
             "model_ms": round(float(ms), 1),
             "boxes": [[round(float(v), 1) for v in b] for b in boxes],
@@ -1695,38 +2017,45 @@ class Window(QWidget):
             cv2.line(shown, (x, y), (x, int(y + sy)), colour, width, cv2.LINE_AA)
 
     # ------------------------------------------------------------------------ repaint
-    def _tick(self):
-        frame, _ = self.capture.latest()
-        if frame is None:
-            return
-        (boxes, confs, count, ms), _ = self.infer.result()
-        # Asked once, used twice: the picture wears the warning and the save button obeys
-        # the same number, so they can never disagree about whether the camera is alive.
-        stale = self.capture.stale()
+    def _draw_frame(self, frame, boxes):
+        """The live picture with the marks and the region on it. Only while it IS live."""
         shown = frame.copy()
-
         for b in boxes:
             if not self.infer.inside(b):
                 continue
             cx, cy = int((b[0] + b[2]) / 2), int((b[1] + b[3]) / 2)
             cv2.circle(shown, (cx, cy), 7, MARK_RIM, -1, cv2.LINE_AA)
             cv2.circle(shown, (cx, cy), 5, MARK, -1, cv2.LINE_AA)
-
         self._draw_roi(shown)
-        if stale > STALE_S:
-            # A red edge on the picture, not words on it: cv2 cannot draw Thai, and the
-            # footer and the chip are already saying it in a language people read.
-            cv2.rectangle(shown, (0, 0), (shown.shape[1] - 1, shown.shape[0] - 1),
-                          STALE_EDGE, 10)
-
         # THE MIRROR, IN ONE LINE AND AT THE VERY END. Everything above drew in the
-        # camera's coordinates -- the marks, the region, the corners going down, the red
-        # border on a dead picture -- so one flip of the finished picture carries all of
-        # them together and none of them had to know. The other half is
-        # CameraView._to_frame, which undoes it for every tap.
+        # camera's coordinates -- the marks, the region, the corners going down -- so one
+        # flip of the finished picture carries all of them together and none of them had
+        # to know. The other half is CameraView._to_frame, which undoes it for every tap.
         if self.flip:
             shown = cv2.flip(shown, 1)
         self.view.show_frame(shown)
+
+    def _tick(self):
+        self._sync_zoom()
+        frame, _ = self.capture.latest()
+        (boxes, confs, count, ms), _ = self.infer.result()
+        # Asked once, used three times: the pane goes black on it, the save button obeys
+        # it and the footer names it, so the three can never disagree about whether the
+        # camera is alive.
+        stale = self.capture.stale()
+        if stale > STALE_S:
+            # THE PICTURE IS NOT DRAWN AT ALL WHILE THE CAMERA IS DEAD. A frozen frame is
+            # the most convincing thing that can be put on this screen -- it looks live
+            # because it was -- and a red border round it is a detail beside a whole tray
+            # of pills. Everything BELOW this still runs: a dead camera is precisely when
+            # the verdict, the block and the buttons have to be right.
+            self.view.show_dead()
+        elif frame is None:
+            # Opened, nothing through yet, and not old enough to call dead. The pane says
+            # "กำลังเปิดกล้อง" by itself and there is no count yet to dress up.
+            return
+        else:
+            self._draw_frame(frame, boxes)
 
         # WHAT THE BIG NUMBER IS, when the prescription took more than one pour.
         #
@@ -1823,7 +2152,7 @@ class Window(QWidget):
             # them is wrong in a way nothing on screen would show. So the region stops
             # being an optional refinement and becomes the thing that makes a count mean
             # anything.
-            block, kind = NO_ROI_NOTE, "setup"
+            block, kind = (SETUP_NO_ROI_NOTE if self.setup else NO_ROI_NOTE), "setup"
         elif self.target and total > self.target:
             # TWO WAYS TO BE OVER, and only one of them can be fixed by hand. Tablets on
             # the tray can be taken off it. Tablets already BANKED cannot: they are in the
@@ -1847,6 +2176,8 @@ class Window(QWidget):
         # harder rather than waiting the half second it is asking for.
         if block:
             round_block = block
+        elif self.setup:
+            round_block = SETUP_NOTE
         elif self.arming:
             round_block = "กำลังกำหนดกรอบนับ  วางมุมให้ครบก่อน"
         elif self.clearing:
@@ -1918,8 +2249,15 @@ class Window(QWidget):
         # against, so the one question anybody opens it to ask -- was this dispensed
         # correctly -- has no answer in it, and never will. The verdict badge has been
         # saying "ยังไม่กำหนดจำนวน" in that state all along; now the save agrees with it.
-        self.save_btn.setEnabled(not self._block and not self.arming and total > 0
-                                 and bool(self.target))
+        self.save_btn.setEnabled(not self._block and not self.arming and not self.setup
+                                 and total > 0 and bool(self.target))
+        if self.setup:
+            self.setup_save_btn.setEnabled(bool(self.infer.roi) and not self.arming)
+            roi_state = ("วางมุมถาดบนภาพทีละมุม" if self.arming
+                         else "กำหนดกรอบแล้ว" if self.infer.roi
+                         else "ยังไม่ได้กำหนดกรอบนับ")
+            if roi_state != self.roi_state.text():
+                self.roi_state.setText(roi_state)
         recolour(self.count_lbl, colour if self.target else T.GREEN_700)
 
         # The bar is coloured with the verdict, not with the fill: at 61 of 60 a full green
@@ -1936,13 +2274,9 @@ class Window(QWidget):
 
         # Chips are restyled only when their words change. setStyleSheet reparses the rule
         # every time it is called, and this runs sixty times a second.
-        roi_text = ("ภาพค้าง" if stale > STALE_S
-                    else "เฉพาะในกรอบ" if self.infer.roi else "นับทั้งภาพ")
-        if roi_text != self.roi_chip.text():
-            self._chip(self.roi_chip, roi_text)
-        ms_text = f"{ms:.0f} ms" if ms else ""
-        if ms_text != self.ms_chip.text():
-            self._chip(self.ms_chip, ms_text)
+        ms_text = f"model {ms:.0f} ms" if ms else ""
+        if ms_text != self.ms_lbl.text():
+            self.ms_lbl.setText(ms_text)
 
         self.clock.setText(time.strftime("%H:%M"))
         self.note_lbl.setText(self.note)

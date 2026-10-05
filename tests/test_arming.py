@@ -50,18 +50,24 @@ win = W.Window(C(), inf, target=60, camera=0)
 print("--- the row has one button, not two")
 check("no undo button on the bench", hasattr(win, "roi_clear"), False)
 
-print("--- draw a region, and saving works")
+print("--- draw a region in the camera settings, save them, and saving works")
+win._setup_open()
 win._roi_clicked()
 for x, y in ((100, 80), (500, 80), (500, 400), (100, 400)):
     win._corner(x, y)
 win._tick()
 check("region set", win.infer.roi is not None, True)
+check("but the count cannot be saved while the settings are open",
+      win.save_btn.isEnabled(), False)
+win._setup_save()
+win._tick()
 check("saving allowed", win.save_btn.isEnabled(), True)
 
 print("--- press กำหนดกรอบใหม่ and it is refused again, with no corners down yet")
-win._roi_clicked()
+win._roi_clicked()                          # opens the settings by itself
 win._tick()
 check("armed", win.arming, True)
+check("inside the settings", win.setup, True)
 check("the old region is still there, so the picture does not go blank",
       win.infer.roi is not None, True)
 check("but saving is refused", win.save_btn.isEnabled(), False)
@@ -78,10 +84,15 @@ print("--- part-way through is still refused")
 win._corner(120, 90); win._corner(520, 140); win._tick()
 check("two corners down", len(win.pending), 2)
 check("still refused", win.save_btn.isEnabled(), False)
+check("and so are the settings", win.setup_save_btn.isEnabled(), False)
 
-print("--- and the moment the fourth corner lands it is allowed again")
+print("--- the fourth corner closes it, and the settings' บันทึก lets the count be saved")
 win._corner(520, 430); win._corner(120, 420); win._tick()
 check("region closed", win.arming, False)
+check("the settings can be saved", win.setup_save_btn.isEnabled(), True)
+win._save()
+check("the count still cannot", len(glob.glob(os.path.join(RECORDS, "count_*.json"))), before)
+win._setup_save(); win._tick()
 check("saving allowed", win.save_btn.isEnabled(), True)
 win._save()
 check("and it files", len(glob.glob(os.path.join(RECORDS, "count_*.json"))), before + 1)
@@ -92,9 +103,11 @@ win._roi_clicked()
 win._tick()                                 # the button is set on the repaint, 16 ms away
 check("armed", win.arming, True)
 check("refused", win.save_btn.isEnabled(), False)
-win._roi_clicked()                          # ยกเลิก
+win._corner(10, 10); win._corner(300, 10); win._corner(300, 300); win._corner(10, 300)
+check("a new region is drawn", win.infer.roi != old_roi, True)
+win._setup_cancel()                         # the settings' ยกเลิก
 win._tick()
-check("disarmed", win.arming, False)
+check("disarmed", (win.arming, win.setup), (False, False))
 check("the old region survived", win.infer.roi, old_roi)
 check("saving allowed again", win.save_btn.isEnabled(), True)
 
@@ -122,7 +135,7 @@ check("saving allowed", dict(sc.hits)["save"] is not None, True)
 def save_live():
     paint()
     # ui.button draws a dead control differently; the truth is the flag it was given.
-    return not sc.blocked and not sc.arming
+    return not sc.blocked and not sc.arming and not sc.setup
 check("save is live", save_live(), True)
 check("no undo button", "roi-clear" in dict(sc.hits), False)
 
@@ -130,11 +143,13 @@ sc._act("roi", None, None)
 check("armed", sc.arming, True)
 check("the old region is still there", sc.roi is not None, True)
 check("save is dead", save_live(), False)
-check("and no pour may be banked", sc.round_block(), "กำลังกำหนดกรอบนับ")
+check("and no pour may be banked", sc.round_block(), "กำลังตั้งค่ากล้อง")
 check("the button offers ยกเลิก", "roi" in dict(sc.hits), True)
 
-sc._act("roi", None, None)                  # ยกเลิก
+sc._act("roi", None, None)                  # หยุดวางมุม
 check("disarmed", sc.arming, False)
+check("still in the settings, so still dead", save_live(), False)
+sc._act("setup-cancel", None, None)
 check("save is live again", save_live(), True)
 
 print("--- and the new words have pictures")

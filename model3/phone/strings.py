@@ -63,12 +63,40 @@ COUNTING = [
     "นำออกก่อนจึงบันทึกได้",
     "ภาพจากกล้องหยุด",
     "ตรวจกล้อง",
+    # What the video pane itself says once the camera has stopped -- black, with these on
+    # it in white, instead of the last frame the camera managed. See screen._dead_pane.
+    "กล้องไม่ทำงาน",
+    "ตรวจสายกล้อง",
+    "กำลังลองเชื่อมต่อใหม่เอง",
     "ภาพค้าง",
     "เฉพาะในกรอบ",
     "นับทั้งภาพ",
     "กำลังเปิดกล้อง",
     "บันทึกแล้ว",
     "กำหนดกรอบแล้ว",
+    # The zoom row under the picture, and what the footer says when moving it has thrown
+    # the counting region away. The factor beside the slider is composed from DIGITS.
+    "ซูม",
+    "ซูมแล้ว กรอบเดิมไม่ตรงกับภาพ กำหนดกรอบใหม่",
+    # The camera settings: the zoom and the region moved off the counting screen into a
+    # panel of their own, opened from the picture's card and left by บันทึก or ยกเลิก.
+    "ตั้งค่ากล้อง",
+    "ปรับซูมก่อน แล้วจึงกำหนดกรอบนับ",
+    "ระยะซูมภาพ",
+    "พื้นที่นับ",
+    "บันทึก",
+    "หยุดวางมุม",
+    "วางมุมถาดบนภาพทีละมุม",
+    "กดบันทึกเพื่อใช้กรอบนี้",
+    "ยังไม่มีกรอบนับ",
+    "กดกำหนดกรอบนับ",
+    "กดตั้งค่ากล้อง",
+    "กำหนดกรอบนับก่อนจึงบันทึกได้",
+    "บันทึกการตั้งค่ากล้องแล้ว",
+    "ยกเลิกแล้ว",
+    "ใช้การตั้งค่ากล้องเดิม",
+    "กำลังตั้งค่ากล้อง",
+    "กดบันทึกหรือยกเลิกก่อน",
     "กรอบเล็กเกินไป",
     # Placing the counting region a corner at a time. The tray is a quadrilateral whenever
     # the lens is not square to the bench, which is always, so the rubber band and its

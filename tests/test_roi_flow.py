@@ -57,8 +57,11 @@ win._corner(*corners[3])
 check("the fourth closes it", win.arming, False)
 check("region set", win.infer.roi, [(100, 80), (100, 400), (500, 400), (500, 80)])
 check("it is not a bow tie", win.infer.roi[0][1] != win.infer.roi[2][1], True)
-check("footer says so", win.note, "กำหนดกรอบแล้ว")
+check("footer says so", win.note.startswith("กำหนดกรอบแล้ว"), True)
 check("the button offers a redraw", win.roi_btn.text(), "กำหนดกรอบใหม่")
+check("not on disk until the settings are saved", os.path.isfile(W.roi_path(0)), False)
+win._setup_save()
+check("บันทึก closes the settings", win.setup, False)
 check("saved to disk", json.load(open(W.roi_path(0), encoding="utf-8"))["roi"],
       [[100, 80], [100, 400], [500, 400], [500, 80]])
 
@@ -137,7 +140,7 @@ print("--- a tap on a control is a tap on the control, not a corner")
 sc._act("roi", None, None)
 check("armed again", sc.arming, True)
 sc.compose(FRAME, np.zeros((0, 4), np.float32), 0, 0.0)
-save_rect = dict(sc.hits)["save"]
+save_rect = dict(sc.hits)["setup-save"]
 sx = int((save_rect[0] + save_rect[2] // 2) * screen_mod.OUT_W / screen_mod.W)
 sy = int((save_rect[1] + save_rect[3] // 2) * screen_mod.OUT_H / screen_mod.H)
 sc.touch("down", sx, sy, FRAME.shape)

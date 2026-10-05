@@ -46,7 +46,7 @@ def _identify(app) -> None:
             pass
 
 
-def run(source=0, model_path=MODEL, conf=0.45, iou=0.4, imgsz=640, target=0,
+def run(source=0, model_path=MODEL, conf=0.45, iou=0.4, imgsz=None, target=0,
         exposure="auto") -> int:
     # HIGH-DPI, AND THIS IS WHAT MADE THE THAI UNREADABLE. This bench runs Windows at
     # 125%. With the default rounding policy Qt rounds a fractional factor to 1x, renders
@@ -108,7 +108,9 @@ def main(argv=None) -> int:
     ap.add_argument("--model", default=MODEL)
     ap.add_argument("--conf", type=float, default=0.45)
     ap.add_argument("--iou", type=float, default=0.4)
-    ap.add_argument("--imgsz", type=int, default=640)
+    ap.add_argument("--imgsz", type=int, default=None,
+                    help="only for a .pt model (default 640); an .onnx is run at the size "
+                         "it was exported at")
     ap.add_argument("--target", type=int, default=0)
     ap.add_argument("--no-sound", action="store_true",
                     help="เงียบ: สำหรับบริเวณที่เสียงรบกวน")

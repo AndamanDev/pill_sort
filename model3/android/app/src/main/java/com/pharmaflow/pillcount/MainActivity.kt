@@ -1,8 +1,10 @@
 package com.pharmaflow.pillcount
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.hardware.camera2.CameraManager
 import android.hardware.display.DisplayManager
 import android.graphics.Bitmap
 import android.os.Bundle
@@ -106,6 +108,40 @@ class MainActivity : ComponentActivity() {
     /** When the camera was last rebound, so a dead camera is not rebound every tick. */
     private var lastRebindAt = 0L
 
+    /**
+     * When [startCamera] last ASKED for the camera, whether or not it got one.
+     *
+     * THE CLOCK [checkCamera] USES BEFORE THERE IS A FRAME TO USE. [lastFrameAt] is
+     * stamped by the analyzer, so it is still 0 when the very first bind failed -- and on
+     * a board with a USB camera that is not a rare case, it is what happens every time the
+     * app is opened before the lead is pushed in. bindToLifecycle throws
+     * "Provided camera selector unable to resolve a camera for the given use case", the
+     * screen says so, and the watchdog used to read the 0 as "not started yet, nothing to
+     * do" and never look again. Plugging the camera in did nothing; only restarting the
+     * app helped. This gives the watchdog something to measure in that state.
+     */
+    @Volatile private var cameraAskedAt = 0L
+
+    /**
+     * How many times the camera has been asked for since a frame last arrived.
+     *
+     * IT DECIDES HOW HARD TO ASK. A session the driver dropped comes back from a plain
+     * rebind, which is cheap. A camera that was UNPLUGGED does not, and the board's log
+     * says so in a way nothing else would have: after the lead came out and went back in,
+     * every rebind reported "cameras available: 1" and bound without throwing, and not one
+     * frame arrived. That 1 was the camera CameraX enumerated at launch -- a handle onto a
+     * device that no longer exists -- because the provider never looks at the hardware
+     * twice. So the first try is a rebind and every try after it is a rescan.
+     */
+    @Volatile private var rebinds = 0
+
+    /** True between asking CameraX to shut down and giving up or getting an answer. */
+    @Volatile private var rescanning = false
+
+    /** Said once per outage, so the message is not rewritten every six seconds. */
+    @Volatile private var cameraLostSaid = false
+
+
     /** The display rotation the camera is currently aimed for. -1 until it is bound. */
     private var boundRotation = -1
 
@@ -115,6 +151,25 @@ class MainActivity : ComponentActivity() {
 
     /** Is the picture being shown left-to-right reversed. Owned by Python; see applyMirror. */
     private var mirrored = false
+
+    /** How close the slider asks for, 1.0 upwards. Owned by Python; see [applyZoom]. */
+    private var wantZoom = 1f
+
+    /**
+     * The part of [wantZoom] the camera could NOT do itself, and this app does instead:
+     * Python crops the middle 1/softZoom of every frame, and the preview surface is scaled
+     * by the same factor about the pane's centre. 1.0 whenever CameraX zoomed the lens.
+     * Read on the analyzer thread, written on the UI thread.
+     */
+    @Volatile private var softZoom = 1f
+
+    /**
+     * Is the bound camera one CameraX cannot zoom -- in practice a USB camera on the board,
+     * whatever way it claims to face. Decides two things at bind time: the analysis stream is asked for at [ANALYSIS_SOFT] so a software crop
+     * has real pixels to spend, and the preview runs on a TextureView, whose scale is
+     * honoured by the compositor wherever the view goes.
+     */
+    private var externalCamera = false
 
     /**
      * TURNING THE PHONE END FOR END DOES NOT CHANGE ITS CONFIGURATION, and that is the
@@ -232,9 +287,54 @@ class MainActivity : ComponentActivity() {
         if (granted) startCamera() else status("ไม่ได้รับสิทธิ์กล้อง\nCamera permission denied")
     }
 
+    /**
+     * MEASUREMENT ONLY. It changes nothing; it writes down what the system says.
+     *
+     * The question it answers: when a USB camera is unplugged and plugged back in, can
+     * THIS PROCESS see the new one at all? The board's log says the app ends up asking
+     * cameraserver about camera "110" after a replug and being told there is no such
+     * camera -- but that ID came out of a list the process already had, so it proves the
+     * list is stale without proving the process is blind. If these callbacks report the
+     * new id, the process can see it and the fix is to make CameraX look again. If they
+     * report nothing, nothing in this process will ever see that camera and only a new
+     * process can.
+     *
+     * Registered for the life of the activity so both edges are caught: the unplug and
+     * the plug-in. It is a listener on the framework's own camera service events, not a
+     * poll of the cached list -- which is the whole point of asking it.
+     */
+    private val cameraWatch = object : CameraManager.AvailabilityCallback() {
+        override fun onCameraAvailable(id: String) {
+            Log.w(TAG, "system says camera available: $id   ids now=${idList()}")
+            if (lastFrameAt != 0L && SystemClock.elapsedRealtime() - lastFrameAt < STALL_MS) {
+                return                              // already counting; nothing to do
+            }
+            // A CAMERA HAS APPEARED AND CAMERAX DOES NOT KNOW. Its list was built at the
+            // last getInstance() and nothing makes it look again, so this is the moment to
+            // make it -- and the only moment there is, because the periodic retry gives up
+            // after GIVE_UP_TRIES and would otherwise never ask once more.
+            rebinds = 0
+            cameraLostSaid = false
+            rescanCameras()
+        }
+        override fun onCameraUnavailable(id: String) {
+            Log.w(TAG, "system says camera unavailable: $id   ids now=${idList()}")
+        }
+    }
+
+    /** What the framework's list holds right now, for comparing against CameraX's view. */
+    private fun idList(): String = try {
+        getSystemService(CameraManager::class.java).cameraIdList.joinToString(",")
+    } catch (t: Throwable) {
+        "<${t.javaClass.simpleName}>"
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        getSystemService(CameraManager::class.java)
+            .registerAvailabilityCallback(cameraWatch, mainHandler)
+        Log.w(TAG, "camera ids at startup: ${idList()}")
         goFullscreen()
         canvasView = findViewById(R.id.canvas)
         statusView = findViewById(R.id.status)
@@ -387,6 +487,7 @@ class MainActivity : ComponentActivity() {
             bitmaps = Array(2) { Bitmap.createBitmap(canvasW, canvasH, Bitmap.Config.ARGB_8888) }
             bridge = module
             mirrored = info.optBoolean("flip", false)
+            wantZoom = info.optDouble("zoom", 1.0).toFloat()
             step(88, "เตรียมการนับ")
 
             Log.i(TAG, "ready: $info")
@@ -406,6 +507,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startCamera() {
+        cameraAskedAt = SystemClock.elapsedRealtime()
         val future = ProcessCameraProvider.getInstance(this)
         future.addListener({
             try {
@@ -415,6 +517,39 @@ class MainActivity : ComponentActivity() {
                 // since is a buffer half a turn away from the picture. See
                 // [displayListener].
                 val rotation = previewView.display?.rotation ?: Surface.ROTATION_0
+
+                // THE CAMERA IS CHOSEN FIRST NOW, because what kind it is decides how big
+                // a stream to ask for. See [externalCamera].
+                val provider = future.get()
+                val selector = pickCamera(provider)
+                if (selector == null) {
+                    // Not a fault to dress up in a stack trace: there is no camera on this
+                    // machine at this moment. checkCamera keeps asking, and the moment a
+                    // lead is pushed in the rescan below finds it.
+                    status("เปิดกล้องไม่สำเร็จ\nไม่พบกล้อง  ตรวจสายกล้อง")
+                    return@addListener
+                }
+                // ASKED OF THE CAMERA, NOT OF WHICH WAY IT FACES. The first version went by
+                // the selector -- not back, not front, so USB -- and the board's UVC camera
+                // answered that it faces BACK, was taken for a handset lens, got the small
+                // stream, and then reported a maxZoomRatio of 1.0 once bound: zoomed by
+                // enlarging 640 pixels. What matters is whether CameraX can zoom it, and
+                // the CameraInfo says so before anything is bound.
+                val maxZoom = try {
+                    selector.filter(provider.availableCameraInfos).firstOrNull()
+                        ?.zoomState?.value?.maxZoomRatio ?: 1f
+                } catch (t: Throwable) {
+                    1f
+                }
+                externalCamera = maxZoom < ZOOM_X
+                Log.i(TAG, "camera maxZoomRatio $maxZoom -> " +
+                        if (externalCamera) "software zoom, ${ANALYSIS_SOFT}" else "camera zoom")
+                // A TextureView for a USB camera, so the surface can be scaled for the
+                // software zoom; the handset's own lens zooms itself and keeps the faster
+                // default. Set before the surface provider, which is when it is read.
+                previewView.implementationMode = if (externalCamera)
+                    PreviewView.ImplementationMode.COMPATIBLE
+                else PreviewView.ImplementationMode.PERFORMANCE
 
                 val analysis = ImageAnalysis.Builder()
                     .setTargetRotation(rotation)
@@ -428,7 +563,11 @@ class MainActivity : ComponentActivity() {
                     // measurements read a few hundred pixels per pill, so 720p was
                     // being paid for in cvtColor, rotate and the BGR->LAB conversion --
                     // 56 + 40 ms a frame -- and then thrown away.
-                    .setTargetResolution(ANALYSIS)
+                    // Except on a USB camera, which cannot zoom itself and is zoomed by
+                    // cropping: there the stream is twice the size, so a crop to the
+                    // middle is still real pixels -- see ANALYSIS_SOFT. Python brings
+                    // every frame back down to 640 across either way.
+                    .setTargetResolution(if (externalCamera) ANALYSIS_SOFT else ANALYSIS)
                     // The pipeline is slower than the camera. Keeping the latest frame
                     // and dropping the rest is what makes the screen show now rather
                     // than a queue of the recent past.
@@ -469,10 +608,9 @@ class MainActivity : ComponentActivity() {
                     .addUseCase(analysis)
                     .build()
 
-                val bound = future.get().let {
+                val bound = provider.let {
                     it.unbindAll()
-                    it.bindToLifecycle(this@MainActivity,
-                                       CameraSelector.DEFAULT_BACK_CAMERA, group)
+                    it.bindToLifecycle(this@MainActivity, selector, group)
                 }
                 camera = bound
                 boundRotation = rotation
@@ -488,12 +626,186 @@ class MainActivity : ComponentActivity() {
                 runOnUiThread {
                     statusView.visibility = View.GONE
                     placePreview()
+                    // A bind starts the camera at 1x: put the slider's zoom back on it,
+                    // after a rebind as much as at launch.
+                    applyZoom()
                 }
             } catch (t: Throwable) {
                 Log.e(TAG, "camera failed", t)
                 status("เปิดกล้องไม่สำเร็จ\n${t.javaClass.simpleName}: ${t.message}")
             }
         }, ContextCompat.getMainExecutor(this))
+    }
+
+    /**
+     * Which camera to bind: the back lens if there is one, otherwise whatever is there.
+     *
+     * DEFAULT_BACK_CAMERA ALONE WAS WRONG FOR THIS HARDWARE, and it is worth being exact
+     * about why, because the symptom names neither cause. That selector asks for a lens
+     * whose facing is BACK. Every phone has one. A USB camera on a board is under no
+     * obligation to say it faces anywhere -- CameraX files it as EXTERNAL -- and then the
+     * selector resolves nothing, bindToLifecycle throws "Provided camera selector unable
+     * to resolve a camera for the given use case", and the screen says the camera could
+     * not be opened while /dev/video0 sits there working perfectly. The bench has no such
+     * notion: app/worker.py opens device 0 and asks it nothing about which way it points.
+     *
+     * The count is drawn from the picture, not from the lens, so any camera will do.
+     */
+    private fun pickCamera(provider: ProcessCameraProvider): CameraSelector? {
+        val cameras = provider.availableCameraInfos
+        Log.i(TAG, "cameras available: ${cameras.size}   system ids=${idList()}")
+        if (cameras.isEmpty()) return null
+        if (provider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA)) {
+            return CameraSelector.DEFAULT_BACK_CAMERA
+        }
+        if (provider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)) {
+            return CameraSelector.DEFAULT_FRONT_CAMERA
+        }
+        Log.w(TAG, "no camera faces anywhere; taking the first one CameraX lists")
+        return cameras[0].cameraSelector
+    }
+
+    /**
+     * Throw CameraX away so it looks at the hardware again.
+     *
+     * CAMERAX ENUMERATES ONCE, at the first getInstance(), and hands back the same camera
+     * list for the life of the process. Open this app with the USB lead out and that list
+     * stays EMPTY however long the lead is in afterwards. It is not a guess: with the
+     * camera plugged in and the system healthy, Android answered
+     *
+     *     dumpsys media.camera  ->  Number of camera devices: 1
+     *     pickCamera            ->  cameras available: 0
+     *
+     * every six seconds, for minutes. The operating system had the camera; CameraX was
+     * still reading an answer it wrote down at launch.
+     *
+     * NOTHING HERE BLOCKS, and that is not decoration. The first version of this ran
+     * `getInstance().get().shutdown().get()` on [worker] -- the single thread that also
+     * composes the screen. When the shutdown did not come back, the thread was held for
+     * ever, every later redraw queued behind it, and the app froze at 95% with
+     * "เชื่อมต่อกล้อง" showing. A blocking get on a shared executor is a deadlock waiting
+     * for the right day, and that day was the same afternoon.
+     *
+     * The timeout is for the other half of that lesson: a shutdown that never finishes
+     * must not stop the app asking again.
+     */
+    private fun rescanCameras() {
+        if (rescanning) return                  // one at a time; they are not idempotent
+        rescanning = true
+        val main = ContextCompat.getMainExecutor(this)
+        val future = ProcessCameraProvider.getInstance(this)
+        future.addListener({
+            try {
+                val provider = future.get()
+                // UNBIND FIRST, AND THIS IS THE DIFFERENCE BETWEEN THE TWO FAILURES.
+                //
+                // Opened with no camera at all, nothing is bound and shutdown() came back
+                // in 3 ms. Unplugged MID-SESSION there are use cases still attached to a
+                // camera that no longer exists, shutdown() has to tear that session down
+                // first, and it never finished once in ten tries -- the board's log says
+                // "shutdown did not finish" every six seconds. Releasing the dead session
+                // is what there is to do about that.
+                provider.unbindAll()
+                provider.shutdown().addListener({
+                    Log.w(TAG, "camera provider shut down; enumerating again")
+                    finishRescan()
+                }, main)
+            } catch (t: Throwable) {
+                Log.w(TAG, "camera provider shutdown failed", t)
+                finishRescan()
+            }
+        }, main)
+        mainHandler.postDelayed({
+            if (rescanning) {
+                Log.w(TAG, "camera provider shutdown did not finish; asking anyway")
+                finishRescan()
+            }
+        }, REBIND_MS)
+    }
+
+    /**
+     * Say the camera is not coming back. SAY IT -- do not act on it.
+     *
+     * THIS METHOD USED TO RESTART THE PROCESS, and that was the worst thing this app has
+     * done. AlarmManager fired the PendingIntent, Android 10 and up refused the activity
+     * start because it came from the background, and the app simply exited and stayed
+     * gone: a counter that vanishes off the bench mid-shift, with no message and nothing
+     * to press. Broken and visible beats gone.
+     *
+     * It was also built on a measurement that did not say what I read into it. A restart
+     * DID recover the board once -- but that was the app opened before the lead was
+     * plugged in, not a lead pulled mid-session. Those are different failures: the second
+     * one leaves the board's own external-camera HAL stuck (futex_wait_queue_me one time,
+     * vb2_core_dqbuf the next), and no new process of ours can mend a wedged HAL.
+     *
+     * So the honest thing is a sentence the operator can act on, and [banked] is asked
+     * only to make that sentence true about their tablets.
+     */
+    private fun sayCameraLost() {
+        if (cameraLostSaid) return
+        cameraLostSaid = true
+        val atRisk = try {
+            bridge?.callAttr("banked")?.toJava(Int::class.java) ?: 0
+        } catch (t: Throwable) {
+            // Assume the worst: if the count cannot be asked about, it is not safe to
+            // throw the process away.
+            Log.w(TAG, "could not ask what is banked; assuming something is", t)
+            1
+        }
+        Log.w(TAG, "camera did not come back after $rebinds tries; banked=$atRisk")
+
+        if (atRisk > 0) {
+            // TABLETS ALREADY IN THE BOTTLE OUTRANK THE CAMERA. A restart discards
+            // `rounds`, and those pours cannot be counted again by looking at anything.
+            status("กล้องไม่สามารถใช้งานได้\nเก็บไว้ $atRisk เม็ด  บันทึกผลก่อน " +
+                   "แล้วปิดเปิดโปรแกรมใหม่")
+            return
+        }
+
+        // NOT WHILE SOMEBODY IS READING THE RECORDS. The camera is the counting page's
+        // business; a restart would throw a reader out of a list they were halfway down to
+        // fix something they are not looking at.
+        val showing = try {
+            bridge?.callAttr("page")?.toString() ?: ""
+        } catch (t: Throwable) {
+            Log.w(TAG, "could not ask which page is showing", t)
+            ""
+        }
+        if (showing != "count") {
+            Log.w(TAG, "camera gone but the $showing page is up; not restarting")
+            return
+        }
+
+        // ONCE PER OUTAGE, NOT ONCE EVERY FOUR SECONDS. The restart only helps when the
+        // board's camera HAL is alive and has simply renumbered the device; when the HAL
+        // itself is wedged -- which is what an unplug mid-stream does here, four times out
+        // of four -- Android has no camera to give and a new process sees exactly the same
+        // nothing. Without this guard the counter would bounce off the bench for ever.
+        val prefs = getSharedPreferences(ENGINE_PREFS, MODE_PRIVATE)
+        val since = System.currentTimeMillis() - prefs.getLong(KEY_RESTARTED_AT, 0L)
+        if (since < RESTART_COOLDOWN_MS) {
+            Log.w(TAG, "already restarted ${since / 1000}s ago; not doing it again")
+            status("กล้องไม่สามารถใช้งานได้\nเปิดโปรแกรมใหม่แล้วแต่กล้องยังไม่กลับมา  " +
+                   "ตรวจสายกล้อง หรือปิดเปิดเครื่อง")
+            return
+        }
+
+        status("กล้องไม่สามารถใช้งานได้\nกำลังเริ่มโปรแกรมใหม่")
+        prefs.edit().putLong(KEY_RESTARTED_AT, System.currentTimeMillis()).apply()
+        Log.w(TAG, "restarting the process to clear the stale camera list")
+        // A beat so the message is on the screen before the screen goes: the operator has
+        // to know WHY the app went away, or a counter that restarts itself is just a
+        // counter that crashes.
+        mainHandler.postDelayed({
+            startActivity(Intent(this, RestartActivity::class.java)
+                              .putExtra(RestartActivity.EXTRA_PID, android.os.Process.myPid()))
+        }, 1500)
+    }
+
+    private fun finishRescan() {
+        if (!rescanning) return                 // the timeout and the listener race
+        rescanning = false
+        startCamera()
     }
 
     private fun analyze(image: ImageProxy) {
@@ -504,6 +816,14 @@ class MainActivity : ComponentActivity() {
             return
         }
         lastFrameAt = SystemClock.elapsedRealtime()
+        rebinds = 0                     // a frame is the only proof that asking worked
+        if (cameraLostSaid) {
+            // The outage is over, whatever ended it. Forget the restart that was spent on
+            // it so the next one is not refused by the cooldown.
+            cameraLostSaid = false
+            getSharedPreferences(ENGINE_PREFS, MODE_PRIVATE)
+                .edit().remove(KEY_RESTARTED_AT).apply()
+        }
         analysing = true
         try {
             val plane = image.planes[0]
@@ -524,7 +844,8 @@ class MainActivity : ComponentActivity() {
             val rgba = py.callAttr(
                 "frame", frameBuf, image.width, image.height,
                 plane.rowStride, image.imageInfo.rotationDegrees,
-                crop.left, crop.top, crop.right, crop.bottom
+                crop.left, crop.top, crop.right, crop.bottom,
+                softZoom.toDouble()
             ).toJava(ByteArray::class.java)
 
             // An empty array means Python decided the screen is identical to the one
@@ -605,8 +926,35 @@ class MainActivity : ComponentActivity() {
      */
     private fun checkCamera() {
         val py = bridge ?: return
-        if (lastFrameAt == 0L || analysing) return      // never started, or mid-frame
-        val gap = SystemClock.elapsedRealtime() - lastFrameAt
+        if (analysing) return                           // mid-frame; its own cost is not a stall
+        val now = SystemClock.elapsedRealtime()
+
+        // NOTHING HAS EVER ARRIVED. Either the first bind threw -- no camera was attached
+        // when the app opened -- or one was attached and has never produced a frame. There
+        // is no picture to redraw and no count to protect: statusView is already showing
+        // the reason. The only useful thing is to ask for the camera again, because the
+        // answer changes the moment somebody pushes the lead in.
+        if (lastFrameAt == 0L) {
+            if (cameraAskedAt == 0L) return             // startCamera has not run yet
+            if (now - cameraAskedAt < REBIND_MS) return
+            if (now - lastRebindAt < REBIND_MS) return
+            lastRebindAt = now
+            rebinds++
+            if (rebinds == 1) {
+                Log.w(TAG, "camera has never sent a frame, asking for it again")
+                startCamera()
+            } else {
+                if (rebinds > GIVE_UP_TRIES) {
+                    sayCameraLost()
+                } else {
+                    Log.w(TAG, "camera has never sent a frame after $rebinds tries, rescanning")
+                    rescanCameras()
+                }
+            }
+            return
+        }
+
+        val gap = now - lastFrameAt
         if (gap < STALL_MS) return
 
         worker.execute {
@@ -617,11 +965,24 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        val now = SystemClock.elapsedRealtime()
         if (gap > REBIND_MS && now - lastRebindAt > REBIND_MS) {
             lastRebindAt = now
-            Log.w(TAG, "no camera frames for $gap ms, rebinding")
-            startCamera()
+            rebinds++
+            if (rebinds == 1) {
+                // Cheap first: a dropped session, a device Windows -- or Android -- merely
+                // re-enumerated, comes back from this and the camera never stops.
+                Log.w(TAG, "no camera frames for $gap ms, rebinding")
+                startCamera()
+            } else {
+                // It did not come back, so the camera in CameraX's list is not the camera
+                // on the end of the lead. See [rebinds].
+                if (rebinds > GIVE_UP_TRIES) {
+                    sayCameraLost()
+                } else {
+                    Log.w(TAG, "no camera frames for $gap ms after $rebinds tries, rescanning")
+                    rescanCameras()
+                }
+            }
         }
     }
 
@@ -725,10 +1086,46 @@ class MainActivity : ComponentActivity() {
             return
         }
 
+        val zoom = json.optDouble("zoom", wantZoom.toDouble()).toFloat()
+        if (zoom != wantZoom) {
+            wantZoom = zoom
+            runOnUiThread { applyZoom() }
+        }
+
         val want = json.optBoolean("flip", mirrored)
         if (want == mirrored) return
         mirrored = want
         runOnUiThread { applyMirror() }
+    }
+
+    /**
+     * Put the slider's zoom on the picture: the camera's own zoom as far as it goes, and
+     * a crop for whatever is left.
+     *
+     * THE CAMERA FIRST, BECAUSE IT IS FREE AND EXACT. setZoomRatio narrows the sensor
+     * crop for every use case in the group at once, so the preview and the analysed frame
+     * move together and nothing on this side has to agree with anything. A handset's lens
+     * reports a maxZoomRatio of several times and does the whole job.
+     *
+     * A USB camera on the board reports 1.0 -- CameraX files it as EXTERNAL and passes no
+     * zoom through -- and the bench's own UVC camera, when it was driven directly, took a
+     * zoom only before it was streaming. So the rest is done here, as on the bench: Python
+     * crops the middle of each frame by [softZoom], and the surface under the hole is
+     * scaled by the same factor about its centre. The overflow is under the opaque canvas,
+     * which is what clips it.
+     */
+    private fun applyZoom() {
+        val cam = camera
+        val max = cam?.cameraInfo?.zoomState?.value?.maxZoomRatio ?: 1f
+        val hw = if (max > 1.001f) minOf(wantZoom, max) else 1f
+        try {
+            if (cam != null && max > 1.001f) cam.cameraControl.setZoomRatio(hw)
+        } catch (t: Throwable) {
+            Log.w(TAG, "camera zoom $hw refused", t)
+        }
+        softZoom = if (hw > 0f) wantZoom / hw else wantZoom
+        Log.i(TAG, "zoom $wantZoom: camera $hw (max $max), software $softZoom")
+        applyMirror()
     }
 
     /**
@@ -745,7 +1142,9 @@ class MainActivity : ComponentActivity() {
      * mirrored. The two meet in the frame, which is the only space they share.
      */
     private fun applyMirror() {
-        previewView.scaleX = if (mirrored) -1f else 1f
+        // The software zoom rides on the same two scales: see [applyZoom].
+        previewView.scaleX = if (mirrored) -softZoom else softZoom
+        previewView.scaleY = softZoom
     }
 
     /**
@@ -889,6 +1288,12 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        try {
+            getSystemService(CameraManager::class.java)
+                .unregisterAvailabilityCallback(cameraWatch)
+        } catch (t: Throwable) {                            // noqa: measurement only
+            Log.w(TAG, "could not unregister the camera watch", t)
+        }
         mainHandler.removeCallbacks(watchdog)
         touchWorker.shutdown()
         super.onDestroy()
@@ -932,7 +1337,44 @@ class MainActivity : ComponentActivity() {
         const val STALL_MS = 1000L
 
         /** How long a dead camera is left alone before the use cases are bound again. */
-        const val REBIND_MS = 6000L
+        /**
+         * How long a dead picture waits before the app does something about it, and how
+         * long between each thing it does after that.
+         *
+         * FOUR SECONDS, DOWN FROM SIX, AND THE LADDER ABOVE IT IS SHORTER TOO. The old
+         * ladder spent thirty seconds on five rescans before it would restart, and a day
+         * of logs on this board says those rescans have never once brought a camera back:
+         * what brings it back is the availability callback, which fires whenever the
+         * system has a camera again and does not care which rung the retry is on. So the
+         * wait was almost entirely wait -- half a minute of an operator watching a black
+         * rectangle, which is a long time at a dispensing bench.
+         *
+         * Not shorter than this, though. A picture can stall for a second or two over a
+         * USB hiccup and come back on its own, and an app that restarts itself over that
+         * is worse than the stall.
+         */
+        const val REBIND_MS = 4000L
+
+        /**
+         * Tries that must fail before the app stops asking and starts over.
+         *
+         * Two, so the whole ladder is: rebind at 4s, rescan at 8s, restart at 12s. Three
+         * rungs, each doing something the one before it did not, and no rung repeated for
+         * the sake of looking busy.
+         */
+        const val GIVE_UP_TRIES = 2
+
+        /** Where the last self-restart is remembered, so one outage buys only one. */
+        const val KEY_RESTARTED_AT = "camera-restarted-at"
+
+        /**
+         * How long a self-restart counts for.
+         *
+         * Three minutes: longer than it takes the app to come back, look for the camera
+         * and give up again, so a wedged HAL cannot turn this into a loop; short enough
+         * that a second, unrelated outage later in the shift still gets its own try.
+         */
+        const val RESTART_COOLDOWN_MS = 180_000L
         const val TAG = "pillsort"
 
         /**
@@ -945,5 +1387,19 @@ class MainActivity : ComponentActivity() {
         // read, which is both smaller than it needs and a different field of view from
         // the one the operator frames the tray in.
         val ANALYSIS = Size(640, 480)
+
+        /**
+         * The same shape, twice the size, for a camera that cannot zoom itself. At the
+         * slider's 2.25x the crop is still 569 real pixels across, against the 640 the
+         * frame is brought down to -- where a crop of 640x480 would hand the model a
+         * 284-pixel picture blown up. The bench does the same with its UVC camera (1080p
+         * cropped to the old 4:3 view, brought down to 640x480), and counted a test tray
+         * exactly as the camera's own 640x480 had. NOT YET MEASURED ON THE BOARD: the cost
+         * is a buffer four times larger per frame, though Python converts only the crop.
+         */
+        val ANALYSIS_SOFT = Size(1280, 960)
+
+        /** screen.ZOOM_X: a camera that cannot zoom this far itself gets ANALYSIS_SOFT. */
+        const val ZOOM_X = 2.25f
     }
 }

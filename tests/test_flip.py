@@ -107,6 +107,7 @@ win.view.set_flip(win.flip)
 win._roi_clicked()
 for x, y in ((100, 80), (500, 80), (500, 400), (100, 400)):
     win._corner(x, y)
+win._setup_save()
 before = list(win.infer.roi)
 saved = json.load(open(W.roi_path(0), encoding="utf-8"))["roi"]
 win._flip_clicked()
@@ -131,7 +132,7 @@ flip_now = win.flip
 win._roi_clicked()
 check("armed for a new one", win.arming, True)
 check("flip kept", W.load_flip(0), flip_now)
-win._disarm()
+win._setup_cancel()
 
 # ------------------------------------------------------------------------------- phone
 print("--- the phone does it the same way, in its own coordinates")
@@ -179,11 +180,14 @@ check("unflipped, a tablet near the left edge marks near the left of the pane",
       left_plain - px < pw // 3, True)
 check("flipped, it marks near the right", (px + pw) - left_flipped < pw // 3, True)
 
+# WITHIN A FRAME PIXEL, not exactly: the mark is drawn at a whole pixel of the scaled-down
+# screen, which is more than one frame pixel wide, so the way back can land on the next
+# one. Exact equality held only for the pane size it was written against.
 sc.flip = True
 check("and a tap on that mark comes back to the tablet",
-      round(sc._to_frame(left_flipped, py + 50, FRAME.shape)[0]), 60)
+      abs(sc._to_frame(left_flipped, py + 50, FRAME.shape)[0] - 60) <= 1, True)
 sc.flip = False
-check("unflipped too", round(sc._to_frame(left_plain, py + 50, FRAME.shape)[0]), 60)
+check("unflipped too", abs(sc._to_frame(left_plain, py + 50, FRAME.shape)[0] - 60) <= 1, True)
 
 print("--- the bridge no longer touches the frame")
 sys.path.insert(0, os.path.join(ROOT, "model3", "android", "app", "src", "main", "python"))
@@ -211,7 +215,7 @@ kt = open(os.path.join(ROOT, "model3", "android", "app", "src", "main", "java",
           encoding="utf-8").read()
 check("the activity reads it at boot", 'info.optBoolean("flip"' in kt, True)
 check("and on every touch", 'optBoolean("flip", mirrored)' in kt, True)
-check("and turns the surface round", 'previewView.scaleX = if (mirrored) -1f else 1f' in kt, True)
+check("and turns the surface round", 'previewView.scaleX = if (mirrored) -softZoom else softZoom' in kt, True)
 
 shutil.rmtree(SETTINGS, ignore_errors=True)
 shutil.rmtree(PH, ignore_errors=True)

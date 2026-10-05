@@ -91,6 +91,12 @@ out = bridge.frame(raw, 640, 480, stride, 0, 0, 0, 0, 0)
 check("the first frame is drawn", len(out) > 0, True)
 check("and it counted them", bridge._S["count"], 61)
 
+# THE DETECTOR IS HELD OFF FOR THIS ONE, so what is tested is the redraw and not the clock.
+# A still tray is still re-read SETTLE more times once the gap since the last pass has run
+# out -- by design, see frame() -- and whether 50 ms has gone by depends on how long the
+# first frame took to compose on whatever machine runs this. At 53 ms it had, the settle
+# pass ran, and the check failed for a reason that has nothing to do with skipping.
+bridge._S["last_detect"] = __import__("time").perf_counter()
 out = bridge.frame(raw, 640, 480, stride, 0, 0, 0, 0, 0)
 check("an identical frame is skipped", len(out), 0)
 

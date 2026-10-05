@@ -28,6 +28,10 @@ import numpy as np
 
 _S: dict = {}
 
+#: Width of every frame handed to the screen and the model. 640, what the 4:3 analysis
+#: stream has always delivered, so a region saved before zoom existed is still valid.
+FRAME_W = 640
+
 #: How different two frames have to be, on a 32x24 grey thumbnail scaled 0-255, before
 #: the tray counts as having changed. Measured against a still tray under a fluorescent
 #: lamp, whose noise sits around 1.5.
@@ -88,7 +92,7 @@ def start(assets_dir: str, records_dir: str, ort,
 
     from model3.phone.engine import Engine
     from model3.phone import screen as screen_mod
-    from model3.phone.screen import Screen, pane_out
+    from model3.phone.screen import Screen, pane_out, zoom_factor
 
     # Before the Screen is built: it reads the canvas constants as it lays out.
     screen_mod.use(int(view_w), int(view_h))
@@ -162,6 +166,9 @@ def start(assets_dir: str, records_dir: str, ort,
     # only place that showed was a phone, saying "เริ่มระบบไม่สำเร็จ".
     return json.dumps({"width": OUT_W, "height": OUT_H, "pane": pane_out(),
                        "records": records_dir, "flip": bool(_S["screen"].flip),
+                       # The zoom it was left at, for Kotlin to put back on the camera
+                       # before the first frame, so the saved region lands where it was put.
+                       "zoom": zoom_factor(_S["screen"].zoom),
                        "model": "x".join(str(v) for v in _S["engine"].hw)})
 
 
@@ -179,14 +186,20 @@ class _Forward:
 
 
 def frame(rgba: bytes, width: int, height: int, row_stride: int, rotation: int,
-          crop_l: int = 0, crop_t: int = 0, crop_r: int = 0, crop_b: int = 0) -> bytes:
-    """One camera frame in, the whole screen out, as RGBA bytes for a Bitmap."""
+          crop_l: int = 0, crop_t: int = 0, crop_r: int = 0, crop_b: int = 0,
+          soft_zoom: float = 1.0) -> bytes:
+    """One camera frame in, the whole screen out, as RGBA bytes for a Bitmap.
+
+    `soft_zoom` is how far THIS side has to zoom: 1.0 when CameraX zoomed the camera
+    itself and the frame already shows the closer picture, the slider's factor when the
+    camera could not and MainActivity is scaling the preview surface by the same amount.
+    """
     cv2 = _S["cv2"]
     screen = _S["screen"]
 
     try:
         bgr = _to_bgr(rgba, width, height, row_stride, rotation,
-                      crop_l, crop_t, crop_r, crop_b)
+                      crop_l, crop_t, crop_r, crop_b, soft_zoom)
     except Exception as exc:                                        # noqa: BLE001
         # A camera whose buffer is not the shape this expects would otherwise take the
         # whole frame call down, and Kotlin would show its own status over everything.
@@ -263,6 +276,30 @@ def frame(rgba: bytes, width: int, height: int, row_stride: int, rotation: int,
     _S["count"] = _count_inside()
 
     return _draw(bgr, 0.0)
+
+
+def page() -> str:
+    """Which page is showing: "count" or "records". "" before the screen exists.
+
+    ASKED BEFORE THE APP RESTARTS ITSELF. A camera fault is only the counting page's
+    problem; somebody reading the day's records has no use for the picture and every
+    reason to object to being thrown out of the list they were halfway down.
+    """
+    screen = _S.get("screen")
+    return "" if screen is None else str(screen.page)
+
+
+def banked() -> int:
+    """Tablets already poured into the bottle and not yet saved. 0 when nothing is at risk.
+
+    ASKED BY KOTLIN BEFORE IT RESTARTS THE PROCESS. A restart is the only thing that
+    recovers a camera this board has lost mid-session, and it throws away `rounds` -- pours
+    that are in the bottle, off the tray, and cannot be counted again by looking at
+    anything. So the restart is allowed only when this is 0, and when it is not the
+    operator is asked instead of being told afterwards.
+    """
+    screen = _S.get("screen")
+    return 0 if screen is None else int(screen.banked())
 
 
 def idle() -> bytes:
@@ -346,12 +383,21 @@ def touch(phase: str, x: int, y: int) -> str:
     # the tablet it belongs to -- which is worse than the mirrored picture it set out to fix.
     return json.dumps({"target": screen.target, "page": screen.page,
                        "flip": bool(screen.flip),
+                       # The zoom, for the same reason as the flip: Kotlin owns the camera
+                       # and the surface, and both have to follow the slider.
+                       "zoom": _zoom_factor(screen.zoom),
                        # The second tap on the header's cross. Python cannot close a
                        # window; the activity can, and this is the only line that asks it.
                        "quit": bool(screen.quitting)})
 
 
 # --------------------------------------------------------------------------- helpers --
+def _zoom_factor(value):
+    from model3.phone.screen import zoom_factor
+
+    return zoom_factor(value)
+
+
 def _count_inside():
     from model3.phone.engine import count_inside
 
@@ -402,7 +448,8 @@ def last_csv() -> str:
     return _S.get("last_csv", "")
 
 
-def _to_bgr(rgba, width, height, row_stride, rotation, crop_l, crop_t, crop_r, crop_b):
+def _to_bgr(rgba, width, height, row_stride, rotation, crop_l, crop_t, crop_r, crop_b,
+            soft_zoom=1.0):
     """CameraX's padded, un-rotated, possibly cropped buffer -> an upright BGR frame.
 
     Three things are wrong with the bytes as they arrive, and all three are the caller's
@@ -424,6 +471,17 @@ def _to_bgr(rgba, width, height, row_stride, rotation, crop_l, crop_t, crop_r, c
     y1 = min(rows, crop_b) if crop_b > crop_t else height
     if x1 - x0 < 16 or y1 - y0 < 16:
         x0, y0, x1, y1 = 0, 0, width, height
+    # THE SOFTWARE ZOOM, AS A SMALLER CROP, BEFORE ANYTHING IS CONVERTED. The middle 1/f of
+    # the viewport's rectangle, about its own centre -- which is the same middle whichever
+    # way the sensor is mounted, so it can be taken here in buffer coordinates, before the
+    # rotation, and the pane-shaped crop below still takes the middle of what is left.
+    # Doing it first also means a closer picture costs LESS: cvtColor only ever sees the
+    # pixels that are going to be shown.
+    if soft_zoom and soft_zoom > 1.001:
+        cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+        hw, hh = (x1 - x0) / (2.0 * soft_zoom), (y1 - y0) / (2.0 * soft_zoom)
+        x0, x1 = int(round(cx - hw)), int(round(cx + hw))
+        y0, y1 = int(round(cy - hh)), int(round(cy + hh))
     bgr = cv2.cvtColor(np.ascontiguousarray(buf[y0:y1, x0:x1]), cv2.COLOR_RGBA2BGR)
 
     if rotation == 90:
@@ -478,6 +536,20 @@ def _to_bgr(rgba, width, height, row_stride, rotation, crop_l, crop_t, crop_r, c
         elif not _S.get("geometry"):
             _S["geometry"] = f"camera {w}x{h} ({have:.3f}) matches the pane"
             print("PILLCOUNT GEOMETRY", _S["geometry"])
+
+    # ONE SIZE OUT, WHATEVER CAME IN. A camera with no zoom of its own is asked for
+    # 1280x960 so the crop above has real pixels to spend (see MainActivity.ANALYSIS_SOFT),
+    # and every frame is brought down to FRAME_W across here: the model letterboxes to its
+    # own small input anyway, the region is stored in these pixels and has to mean the same
+    # thing at every zoom, and a phone camera that sends 640 already passes straight through.
+    h, w = bgr.shape[:2]
+    if w > FRAME_W:
+        bgr = cv2.resize(bgr, (FRAME_W, int(round(h * FRAME_W / float(w)))),
+                         interpolation=cv2.INTER_AREA)
+    elif soft_zoom and soft_zoom > 1.001 and w < FRAME_W:
+        # A crop of a 640 stream: the picture gets no sharper, but it stays one size.
+        bgr = cv2.resize(bgr, (FRAME_W, int(round(h * FRAME_W / float(w)))),
+                         interpolation=cv2.INTER_LINEAR)
 
     # THE MIRROR IS NOT DONE HERE, and it was, for a while. Flipping the frame gives the
     # detector a different image: measured on this bench it moved the count by as much as

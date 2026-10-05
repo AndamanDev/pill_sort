@@ -41,5 +41,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- The one thing that recovers a camera this board has lost, and it has to live
+             in a process of its own so it survives killing the other one. No launcher
+             entry: it is started by MainActivity and by nothing else. -->
+        <activity
+            android:name=".RestartActivity"
+            android:exported="false"
+            android:process=":restart"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true"
+            android:screenOrientation="sensorLandscape" />
     </application>
 </manifest>

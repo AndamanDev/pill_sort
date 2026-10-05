@@ -32,7 +32,16 @@ import os
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
-MODEL = os.path.join(ROOT, "model3", "weights", "pillcount-det-v3.pt")
+#: THE PHONE'S MODEL, BYTE FOR BYTE: the int8 320x416 export model3/android/app/build.gradle
+#: packs into the APK. It used to be pillcount-det-v3.pt, run by PyTorch at 640, and that
+#: was the slow half of this window -- measured on this bench, 436 ms a pass on four
+#: threads against 168 ms for this file in ONNX Runtime. It also meant the two machines
+#: counted with two different models and could disagree about the same tray. On the two
+#: sample trays they agree on the full one (61) and this one does better on the dark one
+#: (5 of the 5 yellow tablets, against 1). The .pt is still there:  --model
+#: model3/weights/pillcount-det-v3.pt
+MODEL = os.path.join(ROOT, "model3", "weights", "v3-320x416-int8-pc.onnx")
+MODEL_PT = os.path.join(ROOT, "model3", "weights", "pillcount-det-v3.pt")
 RECORDS = os.path.join(ROOT, "app", "records")
 
 #: Where the drawn region is kept between runs. PER BENCH, NEVER IN THE REPO -- the same

@@ -57,6 +57,14 @@ ROI_LINE = (90, 220, 110)
 ROI_BAND = (140, 245, 160)
 STALE_EDGE = (60, 60, 220)
 
+#: The pane while the camera is not working: BLACK, and the reason on it in WHITE. The
+#: bench paints the same three, for the reason app/window.py gives beside DEAD_BG -- a
+#: frozen picture is indistinguishable from a live one, and black is the one thing a
+#: camera never sends.
+DEAD_BG = (0, 0, 0)
+DEAD_INK = (255, 255, 255)
+DEAD_SUB = (180, 180, 232)
+
 
 def rounded(img, rect, radius, colour, thickness=-1):
     """A rounded rectangle, filled or stroked. cv2 has no such call, so: four and four."""

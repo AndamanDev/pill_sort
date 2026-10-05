@@ -39,6 +39,7 @@ class Text:
         self._raw = {}                      # file -> BGRA as loaded
         self._scaled = {}                   # (file, px) -> BGRA at that size
         self._tokens = {}                   # string -> how it was split last time
+        self._lines = {}                    # (string, px) -> the whole line's coverage
         self._longest = max((len(w) for w in self.index["words"]), default=1)
 
     # ------------------------------------------------------------------ the pieces --
@@ -135,10 +136,21 @@ class Text:
         px = int(round(px))
         if px <= 0 or not s:
             return 0
-        runs = self._runs(s)
         if align != "left":
             width = self.measure(s, px)
             x = x - width if align == "right" else x - width // 2
+
+        # ONE BLEND FOR THE WHOLE LINE, from a mask built the first time it was asked for.
+        # A line is a dozen pieces -- the footer is forty, a glyph at a time -- and a
+        # blend is a dozen numpy calls whoever small it is, so on a board thirty times
+        # slower than the desk the words cost more than the picture did. The same few
+        # lines are drawn every frame, so each one is assembled once.
+        line = self._line(s, px)
+        if line is not None:
+            mask, dx, dy, advance = line
+            self._blend(dst, mask, x + dx, y + dy, colour, alpha)
+            return advance
+        runs = self._runs(s)
 
         # Where the baselines meet: the tallest ascender in the line decides.
         tops = []
@@ -166,6 +178,71 @@ class Text:
                        colour, alpha)
             cursor += entry["adv"] * px / self.index[kind]["px"]
         return int(round(cursor - x))
+
+    #: How many lines are kept. Far more than one screen holds; the cap is for strings with
+    #: a number in them, which would otherwise collect one entry per value ever shown.
+    LINES_KEPT = 400
+
+    def _line(self, s, px):
+        """(coverage, x offset, y offset, advance) for the line drawn at (0, 0), or None.
+
+        The coverage is what blitting the pieces one after another would have left:
+        1 - the product of what each let through, which is exact for one colour. None for
+        a line with a missing word, which keeps the hollow box the slow way.
+        """
+        key = (s, px)
+        if key in self._lines:
+            return self._lines[key]
+        runs = self._runs(s)
+        placed, tops = [], []
+        for piece, digit in runs:
+            kind = "digit" if digit else "word"
+            entry = self._entry(piece, digit)
+            if entry is None:
+                self._lines[key] = None
+                return None
+            tops.append(self.index[kind]["baseline"] * px / self.index[kind]["px"])
+        baseline = max(tops) if tops else px
+        cursor = 0.0
+        for (piece, digit), top in zip(runs, tops):
+            kind = "digit" if digit else "word"
+            entry = self._entry(piece, digit)
+            img = self._piece(entry, kind, px)
+            placed.append((img, int(round(cursor)), int(round(baseline - top))))
+            cursor += entry["adv"] * px / self.index[kind]["px"]
+        if not placed:
+            self._lines[key] = None
+            return None
+        x0 = min(px_ for _i, px_, _y in placed)
+        y0 = min(py_ for _i, _x, py_ in placed)
+        x1 = max(px_ + i.shape[1] for i, px_, _y in placed)
+        y1 = max(py_ + i.shape[0] for i, _x, py_ in placed)
+        through = np.ones((y1 - y0, x1 - x0, 1), np.float32)
+        for img, px_, py_ in placed:
+            h, w = img.shape[:2]
+            through[py_ - y0:py_ - y0 + h, px_ - x0:px_ - x0 + w] *= (
+                1.0 - img[:, :, 3:4].astype(np.float32) / 255.0)
+        line = (1.0 - through, x0, y0, int(round(cursor)))
+        if len(self._lines) >= self.LINES_KEPT:
+            self._lines.clear()
+        self._lines[key] = line
+        return line
+
+    @staticmethod
+    def _blend(dst, cover, x, y, colour, alpha):
+        """Lay a coverage mask on dst in one colour, clipped to what is on screen."""
+        h, w = cover.shape[:2]
+        H, W = dst.shape[:2]
+        x0, y0 = max(0, x), max(0, y)
+        x1, y1 = min(W, x + w), min(H, y + h)
+        if x0 >= x1 or y0 >= y1:
+            return
+        a = cover[y0 - y:y1 - y, x0 - x:x1 - x]
+        if alpha != 1.0:
+            a = a * alpha
+        patch = dst[y0:y1, x0:x1].astype(np.float32)
+        tint = np.array(colour, np.float32).reshape(1, 1, 3)
+        dst[y0:y1, x0:x1] = (patch + (tint - patch) * a).astype(np.uint8)
 
     @staticmethod
     def _blit(dst, src, x, y, colour, alpha):

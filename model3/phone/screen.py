@@ -41,7 +41,7 @@ from .text import Text
 #:
 #: Sideways for the same reason the bench window is: a tray is wider than it is deep, and
 #: so is the picture of it. Turned upright, a 4:3 frame can only use the top third of a
-#: phone and the count has to go underneath it; turned sideways the picture takes the right
+#: phone and the count has to go underneath it; turned sideways the picture takes the left
 #: two thirds at full height and every control sits in a column beside it -- which is the
 #: desktop's arrangement, on a device you can hold over the bench.
 W, H = 2160, 1080
@@ -76,6 +76,30 @@ PANE = (844, 166, 1088, 816)
 #: green and grey here, so the tolerance below can be generous.
 HOLE = (255, 0, 255)
 
+#: The zoom: the same slider the bench has, in the camera settings panel. 0 is the whole
+#: picture, ZOOM_MAX is ZOOM_X times closer.
+#:
+#: 2.25x, THE BENCH'S NUMBER, AND FOR THE BENCH'S REASON. Where CameraX can zoom the lens
+#: itself it would go further, but where it cannot -- a USB camera on the board -- the
+#: zoom is a crop of the analysis frame, and MainActivity asks for 1280x960 there so that
+#: 2.25x is still 570 real pixels across for a model that reads 640. Past that the model
+#: would be looking at an enlargement. One number on both kinds of camera, so the slider
+#: means the same thing wherever it is pulled.
+#: What the left side is painted where the 4:3 picture does not reach.
+VIEW_BG = (20, 23, 15)
+
+ZOOM_MIN, ZOOM_MAX = 0, 100
+ZOOM_X = 2.25
+ZOOM_STEP = 5
+ZOOM_BAR = (1372, 380, 708, 84)         # set by use(); here so the module loads alone
+ZOOM_NOTE = "ซูมแล้ว กรอบเดิมไม่ตรงกับภาพ กำหนดกรอบใหม่"
+
+
+def zoom_factor(value) -> float:
+    """Slider value -> how many times closer. Straight line from 1x to ZOOM_X."""
+    v = max(ZOOM_MIN, min(ZOOM_MAX, value))
+    return 1.0 + (ZOOM_X - 1.0) * (v - ZOOM_MIN) / (ZOOM_MAX - ZOOM_MIN)
+
 
 def use(view_w, view_h):
     """Lay the canvas out for THIS screen's shape. Called once, before the Screen exists.
@@ -88,28 +112,43 @@ def use(view_w, view_h):
     card takes whatever is left, which is exactly what it does on the bench when the window
     is resized.
     """
-    global W, H, OUT_W, OUT_H, PANE
+    global W, H, OUT_W, OUT_H, PANE, ZOOM_BAR
     if view_w < view_h:                     # portrait: the activity is locked landscape,
         view_w, view_h = view_h, view_w     # but the size can arrive either way round
     H = 1080
-    W = int(round(H * max(1.3, min(2.6, view_w / max(1, view_h)))))
+    # A MULTIPLE OF THREE, so the output is exactly two thirds of it in both directions.
+    # That is what lets compose() scale only the parts of the screen that changed: a
+    # block that starts and ends on a multiple of three scales to precisely the pixels
+    # the whole screen would have given it. See _DIRTY.
+    W = 3 * int(round(H * max(1.3, min(2.6, view_w / max(1, view_h))) / 3))
     OUT_H = 720
-    OUT_W = int(round(W * OUT_H / H))
+    OUT_W = W * OUT_H // H
 
     # The video hole: the largest 4:3 rectangle that fits the camera card, centred in it.
     #
-    # THE CAMERA CARD IS ON THE LEFT NOW, and the panel of controls on the right. The
-    # bench window puts them the other way round and this followed it, on the principle
-    # that the two screens should not have to be learned twice. The bench is worked with a
-    # mouse; a phone propped over a tray is worked with a thumb, and the hand that reaches
-    # the buttons is the one holding the far side of the frame. Which side that is belongs
-    # to whoever is standing at the bench, not to a desktop window.
+    # THE CAMERA CARD IS ON THE LEFT, and the panel of controls on the right. This side was
+    # settled here first and app/window.py was turned round to match it, on the principle
+    # that the two screens must not have to be learned twice -- an operator who works both
+    # should never reach to the wrong side. The bench is worked with a mouse; a phone
+    # propped over a tray is worked with a thumb, and the hand that reaches the buttons is
+    # the one holding the far side of the frame. Which side that is belongs to whoever is
+    # standing at the bench, not to a desktop window.
     card = (28, 104, W - 856, 896)
-    inner = (card[0] + 16, card[1] + 62, card[2] - 32, card[3] - 78)
-    pane_w = min(inner[2], int(inner[3] * 4 / 3))
-    pane_h = int(pane_w * 3 / 4)
-    PANE = (inner[0] + (inner[2] - pane_w) // 2, inner[1] + (inner[3] - pane_h) // 2,
-            pane_w, pane_h)
+    # THE PICTURE HAS THE WHOLE LEFT SIDE. There was a caption row across the top of this
+    # card and a zoom row under the picture; the zoom went into the camera settings, the
+    # caption went altogether, and the settings button went to the header. The pane is
+    # the largest 4:3 that fits the card itself, and what the card's shape leaves over is
+    # dark, so the left reads as one picture rather than a picture on a white card.
+    # Kept whichever panel is showing, because Kotlin places the preview surface once.
+    inner = card
+    # ON THE THREE-PIXEL GRID, for the reason W is: the pane then scales to a whole number
+    # of output pixels with no edge shared with the card, so its scaled form is known
+    # without scaling it -- black, and fully transparent. See compose().
+    pane_w = min(inner[2], int(inner[3] * 4 / 3)) // 12 * 12
+    pane_h = pane_w * 3 // 4
+    PANE = ((inner[0] + (inner[2] - pane_w) // 2) // 3 * 3,
+            (inner[1] + (inner[3] - pane_h) // 2) // 3 * 3, pane_w, pane_h)
+    ZOOM_BAR = (W - 768, 380, 708, 84)     # inside the settings panel; see _chrome_setup
     return W, H
 
 
@@ -163,6 +202,19 @@ THUMB_CACHE = 40
 #: between two numbers, and the one it picks is then frozen into the total and swept into a
 #: bottle where nobody can re-count it.
 STILL_S = 0.5
+
+#: Seconds without a new frame before the picture is called dead -- app/window.py's
+#: STALE_S, the same number for the same reason: above a dropped frame or two, below the
+#: time it takes somebody to look up and file a count of the tray that was there a moment
+#: ago. Kotlin's STALL_MS is set under it on purpose, so the watchdog has already asked
+#: for a redraw by the time this turns true.
+STALE_S = 1.5
+
+#: What the pane says instead of showing a picture, once the camera has stopped. The
+#: second line is the one that stops somebody restarting the app: MainActivity.checkCamera
+#: keeps rebinding the camera on its own, so a lens pushed back on comes back by itself.
+DEAD_HEAD = "กล้องไม่ทำงาน"
+DEAD_LINES = ("ตรวจสายกล้อง", "กำลังลองเชื่อมต่อใหม่เอง")
 
 #: Said while a pour has been taken but the tray it was taken from is still full.
 CLEAR_NOTE = "กวาดเม็ดในถาดออกให้หมด แล้วจึงเทรอบต่อไป"
@@ -361,6 +413,19 @@ class Screen:
         #: flipping the frame gives the detector a different image, and measured on this
         #: bench that moved the count by as much as three on one tray.
         self.flip = rec_store.load_flip(records_dir)
+        #: The zoom slider, ZOOM_MIN..ZOOM_MAX. Like the flip, KOTLIN DOES THE ZOOMING --
+        #: CameraX's own zoom where the camera has one, a crop plus a scaled surface where
+        #: it does not -- and reads the factor off every touch reply. This side owns the
+        #: number, draws the slider, and drops the region when the picture under it changes.
+        self.zoom = rec_store.load_zoom(records_dir)
+        self._zoom_drag = False             # a finger is on the slider's track
+        #: THE CAMERA IS SET UP IN A MODE OF ITS OWN -- the bench's rule, and its reason:
+        #: the zoom and the region are set once when the phone is propped over the tray,
+        #: and controls for them beside the count get nudged mid-shift. "ตั้งค่ากล้อง"
+        #: swaps the counting panel for one that holds both, and NOTHING IS WRITTEN UNTIL
+        #: ITS บันทึก; ยกเลิก puts the zoom and the region back as they were.
+        self.setup = False
+        self._setup_was = None              # (zoom, region) as they were when it opened
         #: The last frame composed, so the round button has a picture to bank. The touch
         #: handler is given one by the bridge for the region maths, but a tap that lands
         #: between two camera frames would have nothing; this always has the last one.
@@ -371,6 +436,8 @@ class Screen:
         self._chrome = None                 # the screen with nothing moving on it
         self._chrome_key = None             # what that picture was drawn for
         self._chrome_hits = []              # and the tap targets it put there
+        self._chrome_out = None             # that picture scaled to the output, for _quick
+        self._work = None                   # where the quick path draws its live parts
         self.hits = []                      # [(name, rect)] from the last compose
         self._touch_start = None            # where the finger went down, in canvas pixels
         self._scroll_start = 0
@@ -436,6 +503,11 @@ class Screen:
         # The refusal is about the save button, which only the counting page has. Carrying
         # it onto the list made the records page say "take some out" over a screen with
         # nothing to take anything out of.
+        # Inside the camera settings the corner count and what was just done are the
+        # advice; the standing refusal says nothing the panel is not already showing.
+        if (self.setup and self.note and self.page == "count"
+                and time.time() - self.note_at < NOTE_SECONDS):
+            return self.note, ui.GREEN_700
         if self.blocked and self.page == "count":
             return self.blocked, ui.DANGER if "ภาพ" in self.blocked or "โมเดล" in self.blocked else ui.WARN
         if self.note and time.time() - self.note_at < NOTE_SECONDS:
@@ -474,6 +546,7 @@ class Screen:
         increments and nothing redraws.
         """
         return (self.page, count, self.marks_at, self.target, self.blocked, self.arming,
+                self.zoom, self.setup,
                 # The pours, and whether the number has held long enough to be taken. The
                 # steadiness is in here so that the moment it flips -- half a second after
                 # the tray stopped moving, with no camera frame needed to say so -- the
@@ -506,7 +579,9 @@ class Screen:
         """
         return (self.page, self.target, self.arming, self.roi is not None,
                 len(self.pending),      # the row's second button counts them
-                self.flip,
+                self.flip, self.zoom, self.setup,
+                # The value itself, not just the setting, while there is a pane at all --
+                # the slider is furniture, and it moves under a finger.
                 bool(self.blocked), self.filter, self.scroll, len(self.rows),
                 # The round row and the save button are both furniture, and both change
                 # with these: how many pours are banked, whether one may be taken now, and
@@ -569,6 +644,10 @@ class Screen:
                 self._page_records(base)
             self._chrome, self._chrome_key = base, key
             self._chrome_hits = list(self.hits)
+            self._chrome_out = None         # scaled on the first quick frame that needs it
+
+        if self._quick(frame, stale):
+            return self._compose_quick(frame, boxes, count, ms, stale)
 
         img = self._chrome.copy()
         self.hits = list(self._chrome_hits)
@@ -591,6 +670,71 @@ class Screen:
             img = cv2.resize(img, (OUT_W, OUT_H), interpolation=cv2.INTER_AREA)
         self._paint_over_video(img)
         return img
+
+    # ------------------------------------------------------------ the quick path --
+    #: Turn the quick path off, and every frame is composed the long way round. The tests
+    #: compare the two pixel for pixel; nothing else should need it.
+    quick_draw = True
+
+    def _quick(self, frame, stale):
+        """Is this frame the ordinary one: the counting page, live video, nothing over it.
+
+        THAT FRAME IS ALMOST EVERY FRAME, and the long way round spent most of its time on
+        it doing work whose answer was already known. It scaled the whole screen down --
+        1728x1080 to 1152x720, measured at nearly half of everything compose() cost --
+        when all that changes from one frame to the next is the clock, the number with
+        its verdict and bar, the footer, and the marks on the video; and it painted the
+        pane in the sentinel colour and searched it again, only to find all of it.
+
+        Anything drawn OVER the screen -- the pad, the calendar, a question, the toast,
+        a fault -- or a pane that is not live video sends the frame the long way.
+        """
+        return (self.quick_draw and self.page == "count" and frame is not None
+                and stale <= STALE_S and self.typing is None and not self.picking
+                and self.asking is None and not self.toast
+                and not (self.fault and self.fault != self.fault_seen)
+                and (OUT_W, OUT_H) != (W, H) and W % 3 == 0 and H % 3 == 0)
+
+    def _dirty(self):
+        """The parts of the design canvas drawn on every frame, on the three-pixel grid.
+
+        Each one is what a single live method draws into, and nothing else may draw
+        outside them on the quick path: what is outside comes from the scaled template
+        and would not show. test_quick_draw holds the two paths to the same pixels.
+        """
+        rects = ((W - 288, 12, 165, 63),        # _clock's patch
+                 (W - 800, 102, 774, 357),      # _live_count: verdict, rounds, figure, bar
+                 (0, H - 78, W, 78))            # _footer
+        return [(x // 3 * 3, y // 3 * 3, -(-(x + w) // 3) * 3 - x // 3 * 3,
+                 -(-(y + h) // 3) * 3 - y // 3 * 3) for x, y, w, h in rects]
+
+    def _compose_quick(self, frame, boxes, count, ms, stale):
+        """compose(), for the ordinary frame: the same picture, scaling only what changed."""
+        if self._chrome_out is None:
+            self._chrome_out = cv2.resize(self._chrome, (OUT_W, OUT_H),
+                                          interpolation=cv2.INTER_AREA)
+            self._work = self._chrome.copy()
+        img = self._work
+        dirty = self._dirty()
+        for x, y, w, h in dirty:
+            img[y:y + h, x:x + w] = self._chrome[y:y + h, x:x + w]
+        self.hits = list(self._chrome_hits)
+        self._clock(img)
+        self._live_count(img, frame, boxes, count, ms, stale, quick=True)
+        self._footer(img)
+
+        out = self._chrome_out.copy()
+        for x, y, w, h in dirty:
+            out[y * 2 // 3:(y + h) * 2 // 3, x * 2 // 3:(x + w) * 2 // 3] = cv2.resize(
+                img[y:y + h, x:x + w], (w * 2 // 3, h * 2 // 3),
+                interpolation=cv2.INTER_AREA)
+        # The pane: what the long way gets by painting it in the sentinel, finding the
+        # sentinel again, blacking it out and scaling both -- known without doing any of it.
+        x, y, w, h = pane_out()
+        out[y:y + h, x:x + w] = 0
+        self.hole_alpha = np.zeros((h, w), np.uint8)
+        self._paint_over_video(out)
+        return out
 
     def _paint_over_video(self, out):
         """The dots and the region, drawn onto the SCALED screen. Marks, not chrome.
@@ -767,7 +911,7 @@ class Screen:
         self.hits.append(("dismiss-fault", rect))
 
     def _block_check(self, count, stale, error):
-        if stale > 1.5:
+        if stale > STALE_S:
             self.blocked = f"ภาพจากกล้องหยุด {stale:.0f} วินาที ตรวจกล้อง"
         elif error:
             self.blocked = "โมเดลผิดพลาด"
@@ -778,7 +922,8 @@ class Screen:
             # them is wrong in a way nothing on screen would show. So the region stops
             # being an optional refinement and becomes the thing that makes a count mean
             # anything -- the same rule the desktop reaches by drawing one before it starts.
-            self.blocked = "ยังไม่ได้กำหนดกรอบนับ"
+            self.blocked = ("ยังไม่มีกรอบนับ กดกำหนดกรอบนับ" if self.setup
+                            else "ยังไม่ได้กำหนดกรอบนับ กดตั้งค่ากล้อง")
         elif self.target and self.total(count) > self.target:
             # TWO WAYS TO BE OVER, and only one of them can be fixed by hand.
             #
@@ -829,6 +974,13 @@ class Screen:
             self.hits.append(("records", ui.button(
                 img, self.text, (W - 696, 12, 380, 64),
                 "ดูรายการที่บันทึก", 26, "ghost")))
+            # THE CAMERA SETTINGS BESIDE IT, and for the same reason: pressed once when the
+            # phone is aimed and then left alone, which is an errand rather than a counting
+            # control. Gone while they are open -- their panel has its own บันทึก and ยกเลิก.
+            if not self.setup:
+                self.hits.append(("setup", ui.button(
+                    img, self.text, (W - 696 - 16 - 260, 12, 260, 64),
+                    "ตั้งค่ากล้อง", 26, "ghost")))
 
     def _logo(self, img):
         """The wordmark, if it was staged into the assets; the name in type if not."""
@@ -876,11 +1028,20 @@ class Screen:
         provider = f"   {self.provider}" if self.provider else ""
         if self.provider and self.provider_ms:
             provider += f" {self.provider_ms:.0f} ms"
-        drew = f"   draw {self.draw_ms:.0f} ms" if self.draw_ms else ""
-        self.text.draw(img,
-                       f"conf {self.conf}   iou {self.iou}   imgsz {self.imgsz}{provider}"
-                       f"{drew}   บันทึกไว้ {len(self.rows)} รายการ",
-                       W - 34, H - 58, 24, ui.INK_MUTED, align="right")
+        # TO THE NEAREST TEN, and in three pieces drawn right to left. The settings and
+        # the record count hardly ever change, so each is one line the text sheet has
+        # already assembled; the times change every frame, and rounded they come round
+        # again often enough to be assembled once too. See Text._line.
+        drew = f"   draw {round(self.draw_ms, -1):.0f} ms" if self.draw_ms else ""
+        model_ms = getattr(self, "model_ms", 0.0)
+        if model_ms and self.page == "count":
+            drew = f"   model {round(model_ms, -1):.0f} ms" + drew
+        right = W - 34
+        for part in (f"   บันทึกไว้ {len(self.rows)} รายการ", drew,
+                     f"conf {self.conf}   iou {self.iou}   imgsz {self.imgsz}{provider}"):
+            if part:
+                right -= self.text.draw(img, part, right, H - 58, 24, ui.INK_MUTED,
+                                        align="right")
 
     def _toast(self, img):
         if not self.toast:
@@ -914,11 +1075,11 @@ class Screen:
         ui.card(img, panel)
         L, R, C = panel[0] + 32, panel[0] + panel[2] - 32, panel[0] + panel[2] // 2
         self.cam_box = (28, 104, W - 856, 896)
-        ui.card(img, self.cam_box)
-        self.text.draw(img, "ภาพจากกล้อง", self.cam_box[0] + 24, self.cam_box[1] + 16,
-                       26, ui.INK_SOFT)
-        # The region and the model's time are CHIPS, drawn live in _camera where the bench
-        # draws them: top right of this card, not grey words beside the title.
+        # No card and no caption: the whole left is the picture. See use().
+        ui.rounded(img, self.cam_box, 28, VIEW_BG, -1)
+        if self.setup:
+            self._chrome_setup(img)
+            return
 
         self.text.draw(img, "เม็ด", C, 382, 28, ui.INK_MUTED, align="centre")
         self.text.draw(img, "จำนวนที่ต้องการ", L, 456, 28, ui.INK_SOFT)
@@ -962,24 +1123,10 @@ class Screen:
             if time.time() - self.reset_armed_at < CONFIRM_SECONDS else "นับใหม่",
             28, "ghost", enabled=bool(self.rounds or self.clearing))))
 
-        # ONE BUTTON, THE WHOLE WIDTH, and a second one only while corners are going down.
-        #
-        # There was a "clear the frame" beside it and it has gone. A region is now what
-        # makes counting possible at all, so clearing one leaves the app unable to do the
-        # single thing it is for -- a control whose only use is to break the screen. What
-        # somebody actually wants is a DIFFERENT region, and pressing this again gives them
-        # that. The undo for a mis-tapped corner still appears, because that is a real
-        # mistake with a real remedy, and only while there is a corner to take back.
-        # ONE BUTTON, THE WHOLE WIDTH, whichever state the region is in.
-        #
-        # There was a "ถอยจุด" beside it that took back the last corner, and it has gone.
-        # Four taps is a short enough gesture that starting it again costs less than a
-        # second control to understand -- and "ยกเลิก" is already sitting here doing
-        # exactly that, in a button the operator has just used to get into this mode.
-        self.hits.append(("roi", ui.button(
-            img, self.text, (L, 776, 708, 84),
-            "ยกเลิก" if self.arming
-            else ("กำหนดกรอบใหม่" if self.roi else "กำหนดกรอบนับ"), 28, "ghost")))
+        # THE REGION IS NOT SET FROM HERE ANY MORE. Its button sat in this row, and it is
+        # a thing done once when the phone is aimed -- beside the save it was one more
+        # control to rule out in a hurry, and one slip from moving which pills are
+        # counted. It lives in the camera settings now, with the zoom. See _chrome_setup.
 
         # The save button says what it is about to file. Armed mid-pour it says what the
         # next tap will cost, because that is the press worth hesitating over -- see _act.
@@ -1004,8 +1151,152 @@ class Screen:
             enabled=not self.blocked and not self.arming and self.live_total() > 0
                     and bool(self.target))))
 
-    def _live_count(self, img, frame, boxes, count, ms, stale):
+    def _chrome_setup(self, img):
+        """The camera settings, in the counting panel's place: zoom, region, บันทึก/ยกเลิก.
+
+        IN THAT ORDER, AND NUMBERED. The region is in frame pixels and the zoom changes
+        what a frame pixel is, so a region drawn before the zoom is moved is thrown away by
+        moving it. Zoom first, outline second, and the outline is always drawn on the
+        picture it will be used with. The bench's _setup_card is the same panel.
+        """
+        panel = (W - 800, 104, 772, 896)
+        ui.card(img, panel)
+        L = panel[0] + 32
+        self.text.draw(img, "ตั้งค่ากล้อง", L, 136, 40, ui.INK)
+        self.text.draw(img, "ปรับซูมก่อน แล้วจึงกำหนดกรอบนับ", L, 206, 24, ui.INK_MUTED)
+        cv2.line(img, (L, 262), (L + 708, 262), ui.LINE, 2)
+
+        self.text.draw(img, "1  ระยะซูมภาพ", L, 300, 28, ui.INK_SOFT)
+        self._zoom_bar(img)
+        cv2.line(img, (L, 500), (L + 708, 500), ui.LINE, 2)
+
+        self.text.draw(img, "2  พื้นที่นับ", L, 538, 28, ui.INK_SOFT)
+        state = ("วางมุมถาดบนภาพทีละมุม" if self.arming
+                 else "กำหนดกรอบแล้ว" if self.roi else "ยังไม่ได้กำหนดกรอบนับ")
+        self.text.draw(img, state, L, 590, 26,
+                       ui.INK_MUTED if self.roi or self.arming else ui.WARN)
+        self.hits.append(("roi", ui.button(
+            img, self.text, (L, 650, 708, 84),
+            "หยุดวางมุม" if self.arming
+            else ("กำหนดกรอบใหม่" if self.roi else "กำหนดกรอบนับ"), 28, "ghost")))
+
+        self.hits.append(("setup-cancel", ui.button(
+            img, self.text, (L, 872, 260, 92), "ยกเลิก", 30, "ghost")))
+        self.hits.append(("setup-save", ui.button(
+            img, self.text, (L + 276, 872, 432, 92), "บันทึก", 38, "primary",
+            enabled=self.roi is not None and not self.arming)))
+
+    def _zoom_bar(self, img):
+        """The bench's zoom row: -, a track with a knob, +, and how close it is.
+
+        THE TRACK IS A WIDE TARGET, not just the knob: a thumb that lands anywhere on it
+        takes the knob there and drags from there. The knob alone is a thing to aim at, and
+        nobody aims well with a phone in one hand and a tray in the other.
+        """
+        x, y, w, h = ZOOM_BAR
+        cy = y + h // 2
+        lw = 0
+        bw = 76
+        minus = (x + lw, y, bw, h)
+        plus = (x + w - 128 - bw, y, bw, h)
+        self.hits.append(("zoom-", ui.button(img, self.text, minus, "-", 34, "ghost")))
+        self.hits.append(("zoom+", ui.button(img, self.text, plus, "+", 34, "ghost")))
+        tx0, tx1 = minus[0] + bw + 34, plus[0] - 34
+        self._zoom_track = (tx0, tx1)
+        frac = (self.zoom - ZOOM_MIN) / float(ZOOM_MAX - ZOOM_MIN)
+        kx = int(tx0 + frac * (tx1 - tx0))
+        ui.rounded(img, (tx0, cy - 7, tx1 - tx0, 14), 7, ui.LINE, -1)
+        if kx > tx0:
+            ui.rounded(img, (tx0, cy - 7, kx - tx0, 14), 7, ui.GREEN_500, -1)
+        cv2.circle(img, (kx, cy), 22, ui.GREEN_700, -1, cv2.LINE_AA)
+        # The whole height of the row, from the - to the +: see the docstring.
+        self.hits.append(("zoom-track", (tx0 - 30, y, tx1 - tx0 + 60, h)))
+        self.text.draw(img, f"{zoom_factor(self.zoom):.1f}x", x + w,
+                       cy - self.text.height(28) // 2, 28, ui.INK, align="right")
+
+    def _zoom_at(self, x):
+        """A finger's x on the track -> a slider value, snapped to the buttons' step."""
+        tx0, tx1 = getattr(self, "_zoom_track", (0, 1))
+        frac = (x - tx0) / float(max(1, tx1 - tx0))
+        v = ZOOM_MIN + frac * (ZOOM_MAX - ZOOM_MIN)
+        return int(round(v / ZOOM_STEP) * ZOOM_STEP)
+
+    def set_zoom(self, value):
+        """Move the zoom, and DROP THE REGION if there was one -- the bench's rule.
+
+        The region is in frame pixels, and zooming changes what a frame pixel IS: the frame
+        Kotlin hands over next is a different piece of the bench, and a region drawn on the
+        old one lies across some other part of the tray -- counting the wrong pills while
+        looking exactly as right as it did a moment ago. So it goes, and the settings
+        cannot be saved until the tray is outlined again on the picture as it is now.
+
+        NOTHING IS WRITTEN HERE: the zoom and the region go to disk together on the
+        settings' บันทึก, and ยกเลิก puts both back. See setup_save and setup_cancel.
+        """
+        value = max(ZOOM_MIN, min(ZOOM_MAX, int(value)))
+        if value != self.zoom:
+            self.zoom = value
+            self.arming = False
+            self.pending = []
+            if self.roi is not None:
+                self.roi = None
+                self.say(ZOOM_NOTE)
+
+    def setup_open(self):
+        """Into the camera settings, remembering what to put back if they are cancelled."""
+        if self.setup:
+            return
+        self.setup = True
+        self._setup_was = (self.zoom, list(self.roi) if self.roi else None)
+        self.arming = False
+        self.pending = []
+        self.say("ปรับซูมก่อน แล้วจึงกำหนดกรอบนับ")
+
+    def setup_save(self, frame_shape=None):
+        """Write the zoom and the region, and go back to counting. Refused with no region."""
+        if not self.setup:
+            return
+        if self.arming:
+            self._roi_prompt()
+            return
+        if self.roi is None:
+            self.say("ยังไม่มีกรอบนับ กำหนดกรอบนับก่อนจึงบันทึกได้")
+            return
+        shape = frame_shape or (self._last_frame.shape
+                                if self._last_frame is not None else None)
+        size = (shape[1], shape[0]) if shape else (0, 0)
+        rec_store.save_zoom(self.records_dir, self.zoom)
+        rec_store.save_roi(self.records_dir, size, self.roi)
+        self._setup_close()
+        self.say("บันทึกการตั้งค่ากล้องแล้ว")
+
+    def setup_cancel(self):
+        """Put the zoom and the region back exactly as they were, and go back to counting.
+
+        Kotlin reads the zoom off every touch reply, so putting the number back here is
+        what puts the camera back.
+        """
+        if not self.setup:
+            return
+        zoom, roi = self._setup_was or (self.zoom, self.roi)
+        self.zoom, self.roi = zoom, roi
+        self._setup_close()
+        self.say("ยกเลิกแล้ว ใช้การตั้งค่ากล้องเดิม")
+
+    def _setup_close(self):
+        self.setup = False
+        self._setup_was = None
+        self.arming = False
+        self.pending = []
+        self._zoom_drag = False
+
+    def _live_count(self, img, frame, boxes, count, ms, stale, quick=False):
         """The number, the verdict, the bar and the video overlay: redrawn every frame."""
+        if self.setup:
+            self._camera(img, frame, boxes,
+                         getattr(self, "cam_box", (28, 104, W - 856, 896)), stale, ms,
+                         quick)
+            return
         panel = (W - 800, 104, 772, 896)
         L, R, C = panel[0] + 32, panel[0] + panel[2] - 32, panel[0] + panel[2] // 2
         total = self.total(count)
@@ -1051,9 +1342,9 @@ class Screen:
         if self.target and self.roi is not None:
             ui.progress(img, (L + 8, 424, 692, 16), total / max(1, self.target), colour)
         self._camera(img, frame, boxes, getattr(self, "cam_box", (28, 104, W - 856, 896)),
-                     stale, ms)
+                     stale, ms, quick)
 
-    def _camera(self, img, frame, boxes, box, stale, ms=0.0):
+    def _camera(self, img, frame, boxes, box, stale, ms=0.0, quick=False):
         """The card around the live picture, and the marks drawn over it.
 
         The picture is CameraX's preview surface showing through the hole; this paints the
@@ -1061,25 +1352,23 @@ class Screen:
         still HOLE at the end of compose() becomes transparent, so a dot, a region, a toast
         or a fault message over the video all survive without any of them knowing about it.
         """
-        # The bench's two chips, in the bench's corner and the bench's words. Live rather
-        # than chrome because the time changes every pass, and the region chip has to sit
-        # beside whatever width that one turns out to be.
-        right = box[0] + box[2] - 24
-        if ms:
-            right = ui.tag(img, self.text, right, box[1] + 18, f"{ms:.0f} ms")[0] - 28
-        ui.tag(img, self.text, right, box[1] + 18,
-               "ภาพค้าง" if stale > 1.5 else
-               ("เฉพาะในกรอบ" if self.roi else "นับทั้งภาพ"))
+        # No chips over the picture any more: the region is drawn on it, a dead camera
+        # blacks it out, and the model's time went to the footer. See _footer.
+        self.model_ms = ms
 
         self._over = []
         px, py, pw, ph = PANE
+        if stale > STALE_S:
+            self._dead_pane(img)
+            return
         if frame is None:
             ui.rounded(img, PANE, 20, (20, 23, 15), -1)
             self.text.draw(img, "กำลังเปิดกล้อง", px + pw // 2, py + ph // 2, 30,
                            ui.INK_MUTED, align="centre")
             return
 
-        img[py:py + ph, px:px + pw] = HOLE
+        if not quick:                       # the quick path knows the pane's answer already
+            img[py:py + ph, px:px + pw] = HOLE
         fh, fw = frame.shape[:2]
         k, ox, oy = fill_center(fw, fh)
 
@@ -1138,10 +1427,26 @@ class Screen:
                 self._over.append(("path", [(qx + ax, qy), (qx, qy), (qx, qy + ay)],
                                    ui.ROI_LINE, 8))
 
-        if stale > 1.5:
-            self._over.append(("rect", (px, py, px + pw - 1, py + ph - 1),
-                               ui.STALE_EDGE, 12))
         self.hits.append(("view", PANE))
+
+    def _dead_pane(self, img):
+        """Black over the hole, the reason in white, and the red edge round it.
+
+        THE HOLE IS NOT PUNCHED, which is the whole mechanism. Everywhere else this method
+        would write HOLE and let CameraX's preview surface show through; painting the
+        rectangle opaque instead covers that surface with the canvas, so the last picture
+        the camera managed is not on the screen at all. Nothing has to be told to stop the
+        preview and nothing has to be restarted afterwards: the next frame that arrives
+        drops `stale` below the threshold, this branch is not taken, the hole is punched
+        again and the video is back.
+        """
+        px, py, pw, ph = PANE
+        ui.rounded(img, PANE, 20, ui.DEAD_BG, -1)
+        ui.rounded(img, PANE, 20, ui.STALE_EDGE, 12)
+        cx, cy = px + pw // 2, py + ph // 2
+        self.text.draw(img, DEAD_HEAD, cx, cy - 78, 44, ui.DEAD_INK, align="centre")
+        self.text.draw(img, DEAD_LINES[0], cx, cy + 4, 28, ui.DEAD_SUB, align="centre")
+        self.text.draw(img, DEAD_LINES[1], cx, cy + 52, 28, ui.DEAD_SUB, align="centre")
 
     # ------------------------------------------------------------------ records page --
     def _page_records(self, img):
@@ -1613,6 +1918,8 @@ class Screen:
         """
         if self.blocked:
             return self.blocked
+        if self.setup:
+            return "กำลังตั้งค่ากล้อง"
         if self.arming:
             # Mid-gesture the number is measured through a region that is about to be
             # replaced. Banking it would put a figure nobody can reproduce into a bottle.
@@ -1782,9 +2089,24 @@ class Screen:
     def _down(self, x, y, frame_shape):
         self._touch_start = (x, y)
         self._scroll_start = self.scroll
+        # The zoom slider is the one control that acts on DOWN: a drag has to move the knob
+        # from the moment the finger lands, and only on the counting page with nothing over
+        # it.
+        self._zoom_drag = (self.page == "count" and self.setup and self.typing is None
+                           and not self.picking and self.asking is None
+                           and any(name == "zoom-track" and ui.hit(rect, x, y)
+                                   for name, rect in self.hits))
+        if self._zoom_drag:
+            self.set_zoom(self._zoom_at(x))
+            self._chrome_key = None
+            return True
         return False
 
     def _move(self, x, y, frame_shape):
+        if self._zoom_drag:
+            self.set_zoom(self._zoom_at(x))
+            self._chrome_key = None
+            return True
         if self._on_list(self._touch_start):
             self.scroll = int(self._scroll_start + (self._touch_start[1] - y))
             return True
@@ -1799,6 +2121,11 @@ class Screen:
         # A drag on the list is a scroll, not a tap on whatever it ended over. Anywhere
         # else, a finger that moved is a finger. See TAP_SLOP.
         start = self._touch_start
+        if self._zoom_drag:
+            self._zoom_drag = False
+            self.set_zoom(self._zoom_at(x))
+            self._chrome_key = None
+            return True
         if (start and self._on_list(start) and abs(start[1] - y) > TAP_SLOP):
             return False
         # A CORNER GOES DOWN ONLY IF THE FINGER STAYED PUT, which is the affordance every
@@ -1846,9 +2173,8 @@ class Screen:
         self.roi = pts
         self.arming = False
         self.pending = []
-        if frame_shape:
-            rec_store.save_roi(self.records_dir, size, self.roi)
-        self.say("กำหนดกรอบแล้ว")
+        # NOT WRITTEN YET: the region goes to disk with the zoom, on the settings' บันทึก.
+        self.say("กำหนดกรอบแล้ว กดบันทึกเพื่อใช้กรอบนี้")
         return True
 
     def _quit(self):
@@ -1983,7 +2309,20 @@ class Screen:
             self.say(f"ใช้จำนวนเดิม {self.target} เม็ด")
         elif name == "quit":
             self._quit()
+        elif name == "zoom-":
+            self.set_zoom(self.zoom - ZOOM_STEP)
+        elif name == "zoom+":
+            self.set_zoom(self.zoom + ZOOM_STEP)
+        elif name == "setup":
+            self.setup_open()
+        elif name == "setup-save":
+            self.setup_save()
+        elif name == "setup-cancel":
+            self.setup_cancel()
         elif name == "roi":
+            # Only inside the camera settings: from anywhere else it opens them first, so
+            # a region can never be changed without the บันทึก that writes it.
+            self.setup_open()
             self.arming = not self.arming
             self.pending = []
             if self.arming:
@@ -2001,7 +2340,9 @@ class Screen:
         elif name == "reset":
             self.reset_rounds()
         elif name == "save":
-            if self.arming:
+            if self.setup:
+                self.say("กำลังตั้งค่ากล้อง กดบันทึกหรือยกเลิกก่อน")
+            elif self.arming:
                 self._roi_prompt()          # say what is still needed, not a refusal
             elif self.blocked:
                 self.say(self.blocked)

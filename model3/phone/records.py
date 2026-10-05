@@ -64,18 +64,43 @@ def load_flip(folder) -> bool:
     round -- they would find it mirrored again with nothing on screen to say why. The two
     settings have different lifetimes, so they get different files.
     """
-    try:
-        with open(view_path(folder), encoding="utf-8") as fh:
-            return bool(json.load(fh).get("flip", False))
-    except Exception:                                               # noqa: BLE001
-        return False
+    return bool(_load_view(folder).get("flip", False))
 
 
 def save_flip(folder, flip):
+    _save_view(folder, flip=bool(flip))
+
+
+def load_zoom(folder) -> int:
+    """The zoom slider's value from last time, 0 (the whole picture) if never moved.
+
+    In view.json beside the flip, as on the bench: it is how the camera is aimed, it is
+    set once and left, and it outlives a cleared region.
+    """
+    z = _load_view(folder).get("zoom", 0)
+    return int(z) if isinstance(z, (int, float)) else 0
+
+
+def save_zoom(folder, zoom):
+    _save_view(folder, zoom=int(zoom))
+
+
+def _load_view(folder) -> dict:
+    try:
+        with open(view_path(folder), encoding="utf-8") as fh:
+            d = json.load(fh)
+        return d if isinstance(d, dict) else {}
+    except Exception:                                               # noqa: BLE001
+        return {}
+
+
+def _save_view(folder, **changes):
+    """MERGED, NOT REWRITTEN: saving the zoom must not put the flip back, or the reverse."""
+    d = _load_view(folder)
+    d.update(changes, saved=time.strftime("%Y-%m-%d %H:%M"))
     os.makedirs(folder, exist_ok=True)
     with open(view_path(folder), "w", encoding="utf-8") as fh:
-        json.dump({"flip": bool(flip), "saved": time.strftime("%Y-%m-%d %H:%M")}, fh,
-                  ensure_ascii=False, indent=2)
+        json.dump(d, fh, ensure_ascii=False, indent=2)
 
 
 def load_roi(folder, size):
