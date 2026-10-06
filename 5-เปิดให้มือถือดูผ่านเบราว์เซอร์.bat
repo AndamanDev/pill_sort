@@ -6,5 +6,6 @@ REM เปิดจากมือถือด้วยที่อยู่ท�
 REM
 REM ปิดด้วย Ctrl+C
 cd /d "%~dp0"
-"D:\pill-counter-lite\pillcount-v12\.venv-train\Scripts\python.exe" -m web.server %*
+call "%~dp0find-python.bat" || exit /b 1
+"%PY%" -m web.server %*
 pause

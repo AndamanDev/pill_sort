@@ -7,7 +7,7 @@ python tests/run.py -v zero         # พร้อมข้อความทุ
 ```
 
 ต้องใช้ล่ามที่มี PySide6, OpenCV, numpy และ onnxruntime — ตัวเดียวกับที่รันแอปบน PC
-(`D:\pill-counter-lite\pillcount-v12\.venv-train\Scripts\python.exe` บนเครื่องที่พัฒนาอยู่)
+(`.venv\Scripts\python.exe` ในโฟลเดอร์โปรเจกต์ — ตัวเดียวกับที่ `find-python.bat` หาให้ไฟล์ .bat ทุกตัว)
 
 ทุกชุดเป็นสคริปต์ที่ขับ**ของจริง** ไม่ใช่ของปลอม: `Window` จริงกับกล้องปลอม, `Screen` จริงที่
 วาดภาพจริงออกมา แล้วพิมพ์ `ok` หรือ `FAIL` ทีละข้อ และจบด้วย exit code ที่ไม่ใช่ศูนย์ถ้ามีข้อไหนพลาด
