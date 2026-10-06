@@ -215,7 +215,8 @@ kt = open(os.path.join(ROOT, "model3", "android", "app", "src", "main", "java",
           encoding="utf-8").read()
 check("the activity reads it at boot", 'info.optBoolean("flip"' in kt, True)
 check("and on every touch", 'optBoolean("flip", mirrored)' in kt, True)
-check("and turns the surface round", 'previewView.scaleX = if (mirrored) -softZoom else softZoom' in kt, True)
+check("and turns the surface round",
+      'previewView.scaleX = if (mirrored != rotated) -softZoom else softZoom' in kt, True)
 
 shutil.rmtree(SETTINGS, ignore_errors=True)
 shutil.rmtree(PH, ignore_errors=True)

@@ -71,6 +71,16 @@ def save_flip(folder, flip):
     _save_view(folder, flip=bool(flip))
 
 
+def load_rotate(folder) -> bool:
+    """Whether the picture is shown turned half round, for a camera on the far side of
+    the tray. The bench's load_rotate, in view.json beside the flip for the flip's reason."""
+    return bool(_load_view(folder).get("rotate", False))
+
+
+def save_rotate(folder, rotate):
+    _save_view(folder, rotate=bool(rotate))
+
+
 def load_zoom(folder) -> int:
     """The zoom slider's value from last time, 0 (the whole picture) if never moved.
 

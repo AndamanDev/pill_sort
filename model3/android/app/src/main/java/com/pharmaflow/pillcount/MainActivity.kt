@@ -152,6 +152,9 @@ class MainActivity : ComponentActivity() {
     /** Is the picture being shown left-to-right reversed. Owned by Python; see applyMirror. */
     private var mirrored = false
 
+    /** Is it shown turned half round. Owned by Python, applied with the mirror. */
+    private var rotated = false
+
     /** How close the slider asks for, 1.0 upwards. Owned by Python; see [applyZoom]. */
     private var wantZoom = 1f
 
@@ -487,6 +490,7 @@ class MainActivity : ComponentActivity() {
             bitmaps = Array(2) { Bitmap.createBitmap(canvasW, canvasH, Bitmap.Config.ARGB_8888) }
             bridge = module
             mirrored = info.optBoolean("flip", false)
+            rotated = info.optBoolean("rotate", false)
             wantZoom = info.optDouble("zoom", 1.0).toFloat()
             step(88, "เตรียมการนับ")
 
@@ -1093,8 +1097,10 @@ class MainActivity : ComponentActivity() {
         }
 
         val want = json.optBoolean("flip", mirrored)
-        if (want == mirrored) return
+        val turn = json.optBoolean("rotate", rotated)
+        if (want == mirrored && turn == rotated) return
         mirrored = want
+        rotated = turn
         runOnUiThread { applyMirror() }
     }
 
@@ -1142,9 +1148,11 @@ class MainActivity : ComponentActivity() {
      * mirrored. The two meet in the frame, which is the only space they share.
      */
     private fun applyMirror() {
-        // The software zoom rides on the same two scales: see [applyZoom].
-        previewView.scaleX = if (mirrored) -softZoom else softZoom
-        previewView.scaleY = softZoom
+        // The software zoom rides on the same two scales: see [applyZoom]. The half turn
+        // is both scales negated about the view's centre -- the same reflection spot()
+        // makes in frame pixels -- so across flips when exactly one of the two is on.
+        previewView.scaleX = if (mirrored != rotated) -softZoom else softZoom
+        previewView.scaleY = if (rotated) -softZoom else softZoom
     }
 
     /**

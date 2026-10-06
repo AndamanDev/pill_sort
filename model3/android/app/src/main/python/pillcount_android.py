@@ -166,6 +166,7 @@ def start(assets_dir: str, records_dir: str, ort,
     # only place that showed was a phone, saying "เริ่มระบบไม่สำเร็จ".
     return json.dumps({"width": OUT_W, "height": OUT_H, "pane": pane_out(),
                        "records": records_dir, "flip": bool(_S["screen"].flip),
+                       "rotate": bool(_S["screen"].rotate),
                        # The zoom it was left at, for Kotlin to put back on the camera
                        # before the first frame, so the saved region lands where it was put.
                        "zoom": zoom_factor(_S["screen"].zoom),
@@ -383,6 +384,8 @@ def touch(phase: str, x: int, y: int) -> str:
     # the tablet it belongs to -- which is worse than the mirrored picture it set out to fix.
     return json.dumps({"target": screen.target, "page": screen.page,
                        "flip": bool(screen.flip),
+                       # The half turn, for exactly the flip's reason.
+                       "rotate": bool(screen.rotate),
                        # The zoom, for the same reason as the flip: Kotlin owns the camera
                        # and the surface, and both have to follow the slider.
                        "zoom": _zoom_factor(screen.zoom),

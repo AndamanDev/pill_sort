@@ -265,6 +265,23 @@ def save_flip(camera, flip):
     _save_view(camera, flip=bool(flip))
 
 
+def load_rotate(camera) -> bool:
+    """Whether this camera's picture is shown turned half round -- for a camera mounted on
+    the far side of the tray, which sees the bench upside down. In the view file beside the
+    flip, for the flip's reason, and like the flip it turns the DRAWING and nothing else.
+
+    A half turn, not a mirror: a camera moved round to the other side of a tray sees the
+    same tray rotated, and the only way to get that out of two mirror buttons is to know to
+    press both. Never a quarter turn either -- the pane is landscape, and a 4:3 picture
+    stood on end would come out a third of the size with the region to be redrawn.
+    """
+    return bool(_load_view(camera).get("rotate", False))
+
+
+def save_rotate(camera, rotate):
+    _save_view(camera, rotate=bool(rotate))
+
+
 def load_zoom(camera):
     """The zoom this camera was left at, or None if nobody has ever moved it.
 
@@ -446,9 +463,12 @@ class CameraView(QLabel):
         self._geom = None                   # (x0, y0, scale) of the last drawn pixmap
         self._pix = None                    # the frame as painted, letterboxed
         self._fw = 0                        # the frame's width, for the mirror
+        self._fh = 0                        # and its height, for the half turn
         #: Is the picture being shown left-to-right reversed. Set by the window, and the
         #: ONLY thing this class does with it is undo it on the way in -- see _to_frame.
         self.flip = False
+        #: Is it shown turned half round. The same arrangement as the flip.
+        self.rotate = False
         self.arming = False                 # set by the window; drives the cursor
         self._press_at = None               # where the button went down, for TAP_SLOP
         #: Set while the camera is not working, cleared by the next frame that arrives.
@@ -463,6 +483,9 @@ class CameraView(QLabel):
 
     def set_flip(self, on):
         self.flip = bool(on)
+
+    def set_rotate(self, on):
+        self.rotate = bool(on)
 
     def minimumSizeHint(self):
         """A picture must never set the floor for the window. Found while measuring.
@@ -480,7 +503,7 @@ class CameraView(QLabel):
         """A live frame. THIS IS ALSO HOW THE FAULT SCREEN GOES AWAY -- see show_dead."""
         self._dead = False
         h, w = bgr.shape[:2]
-        self._fw = w
+        self._fw, self._fh = w, h
         img = QImage(bgr.data, w, h, 3 * w, QImage.Format_BGR888)
         pix = QPixmap.fromImage(img).scaled(self.size(), Qt.KeepAspectRatio,
                                             Qt.SmoothTransformation)
@@ -582,9 +605,14 @@ class CameraView(QLabel):
         if scale <= 0:
             return None
         x = (pos.x() - x0) / scale
-        if self.flip and self._fw:
+        y = (pos.y() - y0) / scale
+        # THE HALF TURN IS BOTH MIRRORS AT ONCE, so a half turn on top of the flip leaves
+        # only the up-down one: across is undone when exactly one of them is on.
+        if (self.flip != self.rotate) and self._fw:
             x = self._fw - 1 - x
-        return x, (pos.y() - y0) / scale
+        if self.rotate and self._fh:
+            y = self._fh - 1 - y
+        return x, y
 
     def mousePressEvent(self, ev):
         if ev.button() == Qt.RightButton:
@@ -881,7 +909,7 @@ class Window(QWidget):
         #: that does. NOTHING IS WRITTEN UNTIL ITS บันทึก: ยกเลิก puts back the zoom and the
         #: region exactly as they were, and closing the window mid-way leaves the files alone.
         self.setup = False
-        self._setup_was = None              # (zoom, region) as they were when it opened
+        self._setup_was = None              # (zoom, region, half turn) when it opened
         #: COUNTS ALREADY TAKEN AND ALREADY TIPPED AWAY, in the order they were taken.
         #:
         #: The tray holds about sixty tablets before they start lying on top of one another,
@@ -910,6 +938,9 @@ class Window(QWidget):
         #:
         #: IT TOUCHES THE DRAWING AND NOTHING ELSE. See CameraView._to_frame.
         self.flip = load_flip(camera)
+        #: Show the picture turned half round, for a camera on the far side of the tray.
+        #: The flip's arrangement exactly: see CameraView._to_frame.
+        self.rotate = load_rotate(camera)
         #: The zoom this camera was left at goes back on before the region is loaded, so
         #: the region is laid over the same picture it was drawn on. See _zoom_moved.
         self._zoom_syncing = False          # True while the slider follows the camera
@@ -960,6 +991,7 @@ class Window(QWidget):
         root.addWidget(self._footer())
 
         self.view.set_flip(self.flip)
+        self.view.set_rotate(self.rotate)
         frame, _ = self.capture.latest()
         if frame is not None:
             pts, why = load_roi(camera, (frame.shape[1], frame.shape[0]))
@@ -1341,7 +1373,7 @@ class Window(QWidget):
 
     # ------------------------------------------------------------------ camera setup
     def _setup_card(self):
-        """The camera settings: the zoom, then the region, then บันทึก or ยกเลิก.
+        """The camera settings: the half turn, the zoom, the region, then บันทึก or ยกเลิก.
 
         IN THAT ORDER, AND NUMBERED, because the order is not a matter of taste. The region
         is in frame pixels and the zoom changes what a frame pixel is, so a region drawn
@@ -1360,15 +1392,34 @@ class Window(QWidget):
         lay.setContentsMargins(24, 24, 24, 24)
         lay.setSpacing(12)
 
+        # NO HINT LINE UNDER THE TITLE any more. It said "ปรับซูมก่อน แล้วจึงกำหนดกรอบนับ",
+        # which the numbered headings now say by their order and the footer says in words
+        # the moment the panel opens -- and the half turn's row needed its height: with it
+        # and the zoom slider both present, the window's measured minimum squeezed บันทึก
+        # until the vowel above it was cut off.
         lay.addWidget(styled(QLabel("ตั้งค่ากล้อง"), 26, QFont.Bold, T.INK))
-        hint = styled(QLabel("ปรับซูมก่อน แล้วจึงกำหนดกรอบนับ  เสร็จแล้วกดบันทึก"),
-                      17, QFont.Normal, T.INK_MUTED)
-        hint.setWordWrap(True)
-        lay.addWidget(hint)
         lay.addSpacing(6)
         lay.addWidget(_rule())
 
-        lay.addWidget(styled(QLabel("1  ระยะซูมภาพ"), 20, QFont.DemiBold, T.INK_SOFT))
+        # The half turn first, because it is the first thing wrong with a camera mounted on
+        # the far side of the tray, and it is the one setting here that moves nothing else:
+        # it turns the drawing, so the zoom and the region below stay as they are. On the
+        # same row as its heading because it is one button, and this panel has to fit the
+        # window's measured minimum.
+        rot_row = QHBoxLayout()
+        rot_row.setSpacing(10)
+        rot_row.addWidget(styled(QLabel("1  ทิศทางภาพ"), 20, QFont.DemiBold, T.INK_SOFT), 1)
+        self.rotate_btn = sized(QPushButton("หมุนภาพ 180°"), 19)
+        self.rotate_btn.setObjectName("topbtn")
+        self.rotate_btn.setCheckable(True)
+        self.rotate_btn.setChecked(self.rotate)
+        self.rotate_btn.clicked.connect(self._rotate_clicked)
+        rot_row.addWidget(self.rotate_btn)
+        lay.addLayout(rot_row)
+        lay.addSpacing(6)
+        lay.addWidget(_rule())
+
+        lay.addWidget(styled(QLabel("2  ระยะซูมภาพ"), 20, QFont.DemiBold, T.INK_SOFT))
         lay.addWidget(self._zoom_bar())
         self.no_zoom_lbl = styled(QLabel("กล้องนี้ปรับซูมไม่ได้"), 18, QFont.Normal,
                                   T.INK_MUTED)
@@ -1376,7 +1427,7 @@ class Window(QWidget):
         lay.addSpacing(6)
         lay.addWidget(_rule())
 
-        lay.addWidget(styled(QLabel("2  พื้นที่นับ"), 20, QFont.DemiBold, T.INK_SOFT))
+        lay.addWidget(styled(QLabel("3  พื้นที่นับ"), 20, QFont.DemiBold, T.INK_SOFT))
         self.roi_state = styled(QLabel(""), 18, QFont.Normal, T.INK_MUTED)
         self.roi_state.setWordWrap(True)
         lay.addWidget(self.roi_state)
@@ -1405,7 +1456,8 @@ class Window(QWidget):
             return
         self.setup = True
         self._setup_was = (getattr(self.capture, "zoom", None),
-                           list(self.infer.roi) if self.infer.roi else None)
+                           list(self.infer.roi) if self.infer.roi else None,
+                           self.rotate)
         self.panel.setVisible(False)
         self.setup_panel.setVisible(True)
         self.setup_btn.setVisible(False)
@@ -1413,7 +1465,7 @@ class Window(QWidget):
         self.note = "ปรับซูม แล้วกำหนดกรอบนับ  เสร็จแล้วกดบันทึก"
 
     def _setup_save(self):
-        """Write the zoom and the region, and go back to counting.
+        """Write the half turn, the zoom and the region, and go back to counting.
 
         REFUSED WITHOUT A REGION. Saving none would leave a counting screen that can count
         nothing, and the way to fix that is back in here -- so it is said here instead.
@@ -1428,16 +1480,19 @@ class Window(QWidget):
             return
         if getattr(self.capture, "zoom_ok", False):
             save_zoom(self.camera, self.zoom_slider.value())
+        save_rotate(self.camera, self.rotate)
         self._persist()
         self._setup_close()
         self.note = "บันทึกการตั้งค่ากล้องแล้ว"
 
     def _setup_cancel(self):
-        """Put the zoom and the region back exactly as they were, and go back to counting."""
+        """Put the zoom, the region and the half turn back exactly as they were, and go
+        back to counting."""
         if not self.setup:
             return
-        zoom, roi = self._setup_was or (None, None)
+        zoom, roi, rotate = self._setup_was or (None, None, self.rotate)
         self._disarm()
+        self._set_rotate(rotate)
         if (zoom is not None and zoom != getattr(self.capture, "zoom", None)
                 and hasattr(self.capture, "set_zoom")):
             self.capture.set_zoom(zoom)
@@ -1637,6 +1692,23 @@ class Window(QWidget):
         self.flip_btn.setChecked(self.flip)
         self._disarm()
         self.note = "พลิกภาพซ้าย-ขวาแล้ว" if self.flip else "เลิกพลิกภาพแล้ว"
+
+    def _rotate_clicked(self):
+        """Turn the picture half round, or back. Shown at once, written on บันทึก.
+
+        Exactly the flip's design -- the frame is never touched, the drawing is turned on
+        its way to the screen and CameraView turns every tap back -- so the region, any
+        corners already tapped, the model and the saved JPEG are all left where they are.
+        It differs from the flip in one thing only: it is a camera setting, so like the zoom
+        it is kept by the settings' บันทึก and put back by their ยกเลิก.
+        """
+        self._set_rotate(not self.rotate)
+        self.note = "หมุนภาพ 180° แล้ว" if self.rotate else "เลิกหมุนภาพแล้ว"
+
+    def _set_rotate(self, on):
+        self.rotate = bool(on)
+        self.view.set_rotate(self.rotate)
+        self.rotate_btn.setChecked(self.rotate)
 
     def _zoom_moved(self, value):
         """The slider moved: tell the capture, and DROP THE REGION if there was one.
@@ -2033,6 +2105,8 @@ class Window(QWidget):
         # to know. The other half is CameraView._to_frame, which undoes it for every tap.
         if self.flip:
             shown = cv2.flip(shown, 1)
+        if self.rotate:
+            shown = cv2.rotate(shown, cv2.ROTATE_180)
         self.view.show_frame(shown)
 
     def _tick(self):

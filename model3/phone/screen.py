@@ -91,7 +91,7 @@ VIEW_BG = (20, 23, 15)
 ZOOM_MIN, ZOOM_MAX = 0, 100
 ZOOM_X = 2.25
 ZOOM_STEP = 5
-ZOOM_BAR = (1372, 380, 708, 84)         # set by use(); here so the module loads alone
+ZOOM_BAR = (1372, 470, 708, 84)         # set by use(); here so the module loads alone
 ZOOM_NOTE = "ซูมแล้ว กรอบเดิมไม่ตรงกับภาพ กำหนดกรอบใหม่"
 
 
@@ -148,7 +148,7 @@ def use(view_w, view_h):
     pane_h = pane_w * 3 // 4
     PANE = ((inner[0] + (inner[2] - pane_w) // 2) // 3 * 3,
             (inner[1] + (inner[3] - pane_h) // 2) // 3 * 3, pane_w, pane_h)
-    ZOOM_BAR = (W - 768, 380, 708, 84)     # inside the settings panel; see _chrome_setup
+    ZOOM_BAR = (W - 768, 470, 708, 84)     # inside the settings panel; see _chrome_setup
     return W, H
 
 
@@ -413,6 +413,10 @@ class Screen:
         #: flipping the frame gives the detector a different image, and measured on this
         #: bench that moved the count by as much as three on one tray.
         self.flip = rec_store.load_flip(records_dir)
+        #: Show the picture turned half round, for a camera on the far side of the tray.
+        #: The flip's arrangement exactly: spot() turns the marks, MainActivity turns the
+        #: surface under them, and _to_frame turns every tap back.
+        self.rotate = rec_store.load_rotate(records_dir)
         #: The zoom slider, ZOOM_MIN..ZOOM_MAX. Like the flip, KOTLIN DOES THE ZOOMING --
         #: CameraX's own zoom where the camera has one, a crop plus a scaled surface where
         #: it does not -- and reads the factor off every touch reply. This side owns the
@@ -425,7 +429,7 @@ class Screen:
         #: swaps the counting panel for one that holds both, and NOTHING IS WRITTEN UNTIL
         #: ITS บันทึก; ยกเลิก puts the zoom and the region back as they were.
         self.setup = False
-        self._setup_was = None              # (zoom, region) as they were when it opened
+        self._setup_was = None              # (zoom, region, half turn) when it opened
         #: The last frame composed, so the round button has a picture to bank. The touch
         #: handler is given one by the bridge for the region maths, but a tap that lands
         #: between two camera frames would have nothing; this always has the last one.
@@ -579,7 +583,7 @@ class Screen:
         """
         return (self.page, self.target, self.arming, self.roi is not None,
                 len(self.pending),      # the row's second button counts them
-                self.flip, self.zoom, self.setup,
+                self.flip, self.rotate, self.zoom, self.setup,
                 # The value itself, not just the setting, while there is a pane at all --
                 # the slider is furniture, and it moves under a finger.
                 bool(self.blocked), self.filter, self.scroll, len(self.rows),
@@ -1152,7 +1156,8 @@ class Screen:
                     and bool(self.target))))
 
     def _chrome_setup(self, img):
-        """The camera settings, in the counting panel's place: zoom, region, บันทึก/ยกเลิก.
+        """The camera settings, in the counting panel's place: half turn, zoom, region,
+        บันทึก/ยกเลิก.
 
         IN THAT ORDER, AND NUMBERED. The region is in frame pixels and the zoom changes
         what a frame pixel is, so a region drawn before the zoom is moved is thrown away by
@@ -1166,17 +1171,24 @@ class Screen:
         self.text.draw(img, "ปรับซูมก่อน แล้วจึงกำหนดกรอบนับ", L, 206, 24, ui.INK_MUTED)
         cv2.line(img, (L, 262), (L + 708, 262), ui.LINE, 2)
 
-        self.text.draw(img, "1  ระยะซูมภาพ", L, 300, 28, ui.INK_SOFT)
-        self._zoom_bar(img)
-        cv2.line(img, (L, 500), (L + 708, 500), ui.LINE, 2)
+        # The half turn first and on its heading's row, as on the bench: see _setup_card.
+        self.text.draw(img, "1  ทิศทางภาพ", L, 300, 28, ui.INK_SOFT)
+        self.hits.append(("rotate", ui.button(
+            img, self.text, (L + 408, 284, 300, 76), "หมุนภาพ 180°", 28, "chip",
+            enabled="on" if self.rotate else True)))
+        cv2.line(img, (L, 384), (L + 708, 384), ui.LINE, 2)
 
-        self.text.draw(img, "2  พื้นที่นับ", L, 538, 28, ui.INK_SOFT)
+        self.text.draw(img, "2  ระยะซูมภาพ", L, 410, 28, ui.INK_SOFT)
+        self._zoom_bar(img)
+        cv2.line(img, (L, 584), (L + 708, 584), ui.LINE, 2)
+
+        self.text.draw(img, "3  พื้นที่นับ", L, 612, 28, ui.INK_SOFT)
         state = ("วางมุมถาดบนภาพทีละมุม" if self.arming
                  else "กำหนดกรอบแล้ว" if self.roi else "ยังไม่ได้กำหนดกรอบนับ")
-        self.text.draw(img, state, L, 590, 26,
+        self.text.draw(img, state, L, 662, 26,
                        ui.INK_MUTED if self.roi or self.arming else ui.WARN)
         self.hits.append(("roi", ui.button(
-            img, self.text, (L, 650, 708, 84),
+            img, self.text, (L, 716, 708, 84),
             "หยุดวางมุม" if self.arming
             else ("กำหนดกรอบใหม่" if self.roi else "กำหนดกรอบนับ"), 28, "ghost")))
 
@@ -1247,13 +1259,14 @@ class Screen:
         if self.setup:
             return
         self.setup = True
-        self._setup_was = (self.zoom, list(self.roi) if self.roi else None)
+        self._setup_was = (self.zoom, list(self.roi) if self.roi else None, self.rotate)
         self.arming = False
         self.pending = []
         self.say("ปรับซูมก่อน แล้วจึงกำหนดกรอบนับ")
 
     def setup_save(self, frame_shape=None):
-        """Write the zoom and the region, and go back to counting. Refused with no region."""
+        """Write the half turn, the zoom and the region, and go back to counting. Refused
+        with no region."""
         if not self.setup:
             return
         if self.arming:
@@ -1266,20 +1279,22 @@ class Screen:
                                 if self._last_frame is not None else None)
         size = (shape[1], shape[0]) if shape else (0, 0)
         rec_store.save_zoom(self.records_dir, self.zoom)
+        rec_store.save_rotate(self.records_dir, self.rotate)
         rec_store.save_roi(self.records_dir, size, self.roi)
         self._setup_close()
         self.say("บันทึกการตั้งค่ากล้องแล้ว")
 
     def setup_cancel(self):
-        """Put the zoom and the region back exactly as they were, and go back to counting.
+        """Put the zoom, the region and the half turn back exactly as they were, and go
+        back to counting.
 
-        Kotlin reads the zoom off every touch reply, so putting the number back here is
-        what puts the camera back.
+        Kotlin reads the zoom and the turn off every touch reply, so putting the values
+        back here is what puts the camera and its surface back.
         """
         if not self.setup:
             return
-        zoom, roi = self._setup_was or (self.zoom, self.roi)
-        self.zoom, self.roi = zoom, roi
+        zoom, roi, rotate = self._setup_was or (self.zoom, self.roi, self.rotate)
+        self.zoom, self.roi, self.rotate = zoom, roi, rotate
         self._setup_close()
         self.say("ยกเลิกแล้ว ใช้การตั้งค่ากล้องเดิม")
 
@@ -1389,8 +1404,11 @@ class Screen:
             # one frame-pixel-worth of canvas -- about two pixels here -- to one side of
             # its tablet, in the same direction, all over the tray. Small, consistent, and
             # exactly the kind of drift nobody can explain by looking at it.
-            sx = (fw - x) if self.flip else x
-            return int(ox + sx * k), int(oy + y * k)
+            # The half turn is both mirrors at once -- Kotlin negates both scales, about the
+            # same centre -- so across is reflected when exactly one of the two is on.
+            sx = (fw - x) if self.flip != self.rotate else x
+            sy = (fh - y) if self.rotate else y
+            return int(ox + sx * k), int(oy + sy * k)
 
         # NOTHING IS DRAWN INTO THE HOLE HERE -- it is written down and drawn by
         # _paint_over_video once the screen has been scaled. See that method.
@@ -2055,9 +2073,12 @@ class Screen:
         if k <= 0:
             return None
         fx = (x - ox) / k
-        if self.flip:
+        fy = (y - oy) / k
+        if self.flip != self.rotate:
             fx = fw - fx                    # spot()'s mirror, undone
-        return fx, (y - oy) / k
+        if self.rotate:
+            fy = fh - fy                    # and its half turn
+        return fx, fy
 
     def touch(self, phase, x, y, frame_shape=None, on_save=None, on_export=None):
         """One touch event in CANVAS coordinates. Returns True if something changed.
@@ -2315,6 +2336,12 @@ class Screen:
             self.set_zoom(self.zoom + ZOOM_STEP)
         elif name == "setup":
             self.setup_open()
+        elif name == "rotate":
+            # Shown at once, written by the settings' บันทึก like the zoom beside it. The
+            # region and any corners already tapped stay: they are in frame pixels, and the
+            # turn only changes how the frame is drawn.
+            self.rotate = not self.rotate
+            self.say("หมุนภาพ 180° แล้ว" if self.rotate else "เลิกหมุนภาพแล้ว")
         elif name == "setup-save":
             self.setup_save()
         elif name == "setup-cancel":

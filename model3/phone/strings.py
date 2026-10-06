@@ -34,7 +34,8 @@ for Latin digits and punctuation in a way it never is for Thai.
 DIGITS = ("0123456789:/.,-+ x%—"
           "()[]_'\"!?#=<>*"
           "abcdefghijklmnopqrstuvwxyz"
-          "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+          "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+          "°")                          # last, so the glyph files before it keep their names
 
 #: Every fixed string, grouped by where it appears. The groups are for reading; the tool
 #: renders the union.
@@ -129,6 +130,11 @@ COUNTING = [
     "ยังไม่ได้กำหนดกรอบนับ",
     "พลิกภาพซ้าย-ขวาแล้ว",
     "เลิกพลิกภาพแล้ว",
+    # The half turn in the camera settings, for a camera on the far side of the tray. The
+    # "180°" after หมุนภาพ is composed from DIGITS, which is why the degree sign is there.
+    "ทิศทางภาพ",
+    "หมุนภาพ",
+    "เลิกหมุนภาพแล้ว",
     "มุมนี้แคบเกินไป",
     "แตะให้ห่างจากมุมอื่น",
     "โมเดลผิดพลาด",
