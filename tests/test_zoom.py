@@ -96,10 +96,8 @@ class I:
 
 CORNERS = [(100, 80), (500, 80), (500, 400), (100, 400)]
 def outline(win):
-    for x, y in CORNERS:
-        if not win.arming:
-            win._roi_clicked()
-        win._corner(x, y)
+    win._roi_clicked()
+    win.infer.roi = W.quad(CORNERS, (640, 480))
 
 win = W.Window(C(False), I(), camera=0)
 win.show()

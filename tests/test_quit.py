@@ -116,8 +116,8 @@ print("--- and a tap elsewhere does not close it either")
 sc.quitting = False
 sc.quit_armed_at = 0.0
 tap(centre(box("quit")))                        # arm
-tap(centre(box("records")))                     # something else
-sc.page = "count"
+tap(centre(box("setup")))                       # something else
+sc.setup_cancel()
 tap(centre(box("quit")))                        # would be the 'second' tap
 check("the run was broken by the other press", sc.quitting, False)
 

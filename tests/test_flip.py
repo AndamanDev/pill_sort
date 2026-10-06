@@ -93,7 +93,6 @@ check("the model's dot turned with the picture",
 print("--- and a tap comes back through the same mirror")
 win.view._geom = (0.0, 0.0, 1.0)            # a 1:1 picture at the widget's origin
 win.view._fw = 640
-win.view.arming = True
 check("the view is flipped", win.view.flip, True)
 check("flipped, a tap at 100 is 539", win.view._to_frame(QPointF(100, 50))[0], 539.0)
 win.view.set_flip(False)
@@ -105,8 +104,7 @@ check("the mirror is its own inverse",
 print("--- the counting region does not move when the picture turns")
 win.view.set_flip(win.flip)
 win._roi_clicked()
-for x, y in ((100, 80), (500, 80), (500, 400), (100, 400)):
-    win._corner(x, y)
+win.infer.roi = W.quad([(100, 80), (500, 80), (500, 400), (100, 400)], (640, 480))
 win._setup_save()
 before = list(win.infer.roi)
 saved = json.load(open(W.roi_path(0), encoding="utf-8"))["roi"]
@@ -130,7 +128,7 @@ print("--- replacing the region does NOT undo the flip")
 # actually does is draw a DIFFERENT one, which is what this stands in for.
 flip_now = win.flip
 win._roi_clicked()
-check("armed for a new one", win.arming, True)
+check("a new one to drag", win.setup and win.infer.roi is not None, True)
 check("flip kept", win.flip, flip_now)
 win._setup_cancel()
 check("and still kept after ยกเลิก", win.flip, flip_now)

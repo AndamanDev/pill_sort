@@ -54,6 +54,12 @@ COUNTING = [
     "เกิน",
     "ขาด",
     "จำนวนที่ต้องการ",
+    # The row across the top of the panel: asked for, counted so far, still missing (or
+    # over by). The third heading changes with the state.
+    "ยอดที่ต้องการ",
+    "ยอดสะสม",
+    "ยอดที่ขาด",
+    "ยอดที่เกิน",
     "กำหนดกรอบนับ",
     "กำหนดกรอบใหม่",
     "ยกเลิก",
@@ -86,8 +92,6 @@ COUNTING = [
     "ระยะซูมภาพ",
     "พื้นที่นับ",
     "บันทึก",
-    "หยุดวางมุม",
-    "วางมุมถาดบนภาพทีละมุม",
     "กดบันทึกเพื่อใช้กรอบนี้",
     "ยังไม่มีกรอบนับ",
     "กดกำหนดกรอบนับ",
@@ -99,10 +103,12 @@ COUNTING = [
     "กำลังตั้งค่ากล้อง",
     "กดบันทึกหรือยกเลิกก่อน",
     "กรอบเล็กเกินไป",
-    # Placing the counting region a corner at a time. The tray is a quadrilateral whenever
-    # the lens is not square to the bench, which is always, so the rubber band and its
-    # "ลากนิ้วคลุมพื้นที่ถาด" went together.
-    "แตะมุมถาดทีละมุม",
+    # The counting region: a rectangle to start, then each corner dragged onto the tray's.
+    # The tray is a quadrilateral whenever the lens is not square to the bench, which is
+    # always, so four free corners rather than a rubber band.
+    "ลากมุมกรอบให้ตรงมุมถาด",
+    "แล้วกดบันทึก",
+    "ลากมุมบนภาพเพื่อปรับ",
     "อีก",
     "จุด",
     "ถอยจุด",
@@ -112,7 +118,6 @@ COUNTING = [
     "ป้อนจำนวน",
     "เกินจำนวนที่ตั้งไว้",
     "กดนับใหม่",
-    "กำลังกำหนดกรอบนับ",
     "มากกว่าจำนวนใหม่",
     "เปลี่ยนเป็น",
     "เม็ดที่เก็บแล้วอยู่ในกระปุก",
@@ -139,7 +144,7 @@ COUNTING = [
     "เลิกหมุนภาพแล้ว",
     "พลิกซ้าย-ขวา",
     "มุมนี้แคบเกินไป",
-    "แตะให้ห่างจากมุมอื่น",
+    "ลากให้ห่างจากมุมอื่น",
     "โมเดลผิดพลาด",
     # Multi-round counting. A tray holds about sixty tablets before they start lying on
     # one another, so a prescription for a hundred is physically two pours, and these are
@@ -153,6 +158,11 @@ COUNTING = [
     "เริ่มนับใหม่",
     "ทิ้งยอดสะสม",
     "แล้ว",
+    # รีเซ็ต: the number asked for goes too, not only the pours.
+    "รีเซ็ต",
+    "รีเซ็ตแล้ว",
+    "และ",
+    "กดอีกครั้งเพื่อรีเซ็ต",
     "เก็บแล้ว",
     "รอบ",
     "รวม",

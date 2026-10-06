@@ -7,7 +7,8 @@ dispensed correctly -- has no answer in it and never will.
 
 THE SCREEN HAS BEEN SAYING SO ALL ALONG. The verdict badge reads "ยังไม่กำหนดจำนวน" in
 that state; what it did not do was stop the save, so the green button sat under the badge
-contradicting it. This is the third of the three things that have to be true before a
+contradicting it. Now the big button is Keep in that state, and dead: there is nothing
+to keep a pour towards and nothing to file. This is the third of the three things that have to be true before a
 count may be filed -- a region (test_arming), tablets (test_zero), and a number asked for.
 """
 import os, sys, tempfile, shutil, glob
@@ -62,7 +63,9 @@ print("--- eight tablets on the tray, and no number asked for")
 tray(8)
 check("the count is real", win.banked() + 8, 8)
 check("nothing is blocking, this is not a fault", win._block, "")
-check("the badge says so", win.verdict.text(), "ยังไม่กำหนดจำนวน")
+check("the ยอดที่ต้องการ column says so", win.want_lbl.text(), "—")
+check("and so does the shortfall", win.diff_lbl.text(), "—")
+check("the big button is Keep, not Done", win._main, "keep")
 check("and the save agrees with the badge", win.save_btn.isEnabled(), False)
 
 print("--- and the refusal holds if the button is reached anyway")
@@ -71,11 +74,12 @@ win._save()
 check("nothing filed", filed(), before)
 check("and it says why", win.note, W.NO_TARGET_NOTE)
 
-print("--- ask for a number and it comes alive")
-win._set_target(10)
+print("--- ask for the number that is on the tray and it comes alive as Done")
+win._set_target(8)
 win._tick()
+check("Done", win._main, "done")
 check("live", win.save_btn.isEnabled(), True)
-win._save()
+win._main_clicked()
 check("filed", filed(), before + 1)
 
 print("--- เคลียร์ puts it back to dead, not to a silent zero")
@@ -104,7 +108,7 @@ def paint(n=0):
     return sc.compose(F, B, n, 8.0)
 
 def savable():
-    return (not sc.blocked and not sc.arming and sc.live_total() > 0 and bool(sc.target))
+    return (not sc.blocked and sc.live_total() > 0 and bool(sc.target))
 
 paint(8)
 check("eight on the tray", sc.live_total(), 8)
@@ -115,11 +119,13 @@ print("--- a tap on the dead button answers instead of swallowing the press")
 saved = []
 sc._act("save", lambda: saved.append(1), None)
 check("nothing was filed", saved, [])
-check("and it said why", "กำหนดจำนวนก่อนจึงบันทึกได้" in sc.note, True)
+check("and it said why", "ยังไม่กำหนดจำนวน" in sc.note, True)
+check("and nothing was banked as a pour", sc.rounds, [])
 
-print("--- ask for a number and it comes alive")
-sc._want_target(10)
+print("--- ask for the number that is on the tray and it comes alive as Done")
+sc._want_target(8)
 paint(8)
+check("Done", sc.main_action(), "done")
 check("live", savable(), True)
 sc._act("save", lambda: saved.append(1), None)
 check("filed", saved, [1])
@@ -138,8 +144,7 @@ check("the key moved with the number", sc.chrome_key() != empty, True)
 print("--- and the words have pictures")
 def missing(t):
     return [p for p, d in sc.text._runs(t) if sc.text._entry(p, d) is None]
-check("ยังไม่กำหนดจำนวน กำหนดจำนวนก่อนจึงบันทึกได้",
-      missing("ยังไม่กำหนดจำนวน กำหนดจำนวนก่อนจึงบันทึกได้"), [])
+check("ยังไม่กำหนดจำนวน", missing("ยังไม่กำหนดจำนวน"), [])
 
 shutil.rmtree(REC, ignore_errors=True)
 print()

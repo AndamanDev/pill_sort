@@ -52,7 +52,8 @@ check("it has ok", "key-ok" in names, True)
 check("and it has a cross", "key-close" in names, True)
 
 cross = names["key-close"]
-pad_w, pad_h = 560, 700
+pad_h = H - 80                          # the pad fills the screen's height
+pad_w = min(W - 80, int(pad_h * 0.78))
 pad = ((W - pad_w) // 2, (H - pad_h) // 2, pad_w, pad_h)
 print(f"       cross at {cross}, pad at {pad}")
 check("the cross is inside the pad",
@@ -75,9 +76,9 @@ for label, point in (("the target row behind it", (120, 545)),
                      ("the camera picture", (1570, 574)),
                      ("the records button", (W - 600, 44)),
                      ("empty background", (30, 1050))):
-    before = (sc.typing, sc.target, sc.page, sc.arming)
+    before = (sc.typing, sc.target, sc.page, sc.setup, sc.roi)
     tap(point)
-    after = (sc.typing, sc.target, sc.page, sc.arming)
+    after = (sc.typing, sc.target, sc.page, sc.setup, sc.roi)
     check(f"{label} changed nothing", after, before)
 
 print("--- the digits still work after all that")
@@ -111,17 +112,21 @@ tap(centre(rect("target+")))
 check("ป้อนจำนวน reaches the screen again and opens the pad", sc.typing, "")
 tap(centre(rect("key-close")))
 
-print("--- no corner of the counting region lands behind a pad")
+print("--- no corner of the counting region moves behind a pad")
 sc._act("roi", None, None)
-check("armed", sc.arming, True)
+check("a region to drag", sc.roi is not None, True)
 sc._act("type-target", None, None)
 check("pad up over it", sc.typing, "")
-px, py, pw, ph = screen_mod.PANE
-tap((px + 40, py + ph - 40))            # on the video, clear of the pad
-check("no corner was placed", len(sc.pending), 0)
+cx, cy = sc._to_canvas(*sc.roi[0], FRAME.shape)  # on a corner, on the video
+ox, oy = int(cx * OUT_W / W), int(cy * OUT_H / H)
+sc.touch("down", ox, oy, FRAME.shape)
+check("no corner was picked up", sc.grab, None)
+sc.touch("up", ox, oy, FRAME.shape)
 tap(centre(rect("key-close")))
-tap((px + 40, py + ph - 40))
-check("and it places one again once the pad is gone", len(sc.pending), 1)
+sc.touch("down", ox, oy, FRAME.shape)
+check("and it picks one up again once the pad is gone", sc.grab, 0)
+sc.touch("up", ox, oy, FRAME.shape)
+sc._act("setup-cancel", None, None)
 
 print("--- the calendar is modal too, and keeps its own close")
 sc.page = "records"

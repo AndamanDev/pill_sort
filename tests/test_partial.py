@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Filing a total that is SHORT, with pours already banked in it.
+"""A SHORT total cannot be filed from the big button any more.
 
-A short count on one tray is the stock running out and is filed without ceremony -- the
-button already says so in its words and its colour. What is different mid-pour is what a
-stray press destroys: the tablets in `rounds` are in a bottle, they cannot be re-counted,
-and saving clears the list that is the only record of them. So that case, and only that
-case, is asked about first.
+The button has two jobs and the count picks between them: Keep (orange) while the total is
+short -- a press banks the tray, it does not file -- and Done (green) once the total is
+exactly the target, which files. Over is neither. So a short count with pours banked in it
+is no longer one stray press from being filed and the bottle's count lost: the press that
+used to do that now keeps the tray instead. The partial-save question (_confirm_partial)
+is still there behind _save() for anything that calls it directly, and is checked last.
 """
 import os, sys, json, glob, shutil, tempfile
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
@@ -71,65 +72,64 @@ win._confirm_partial = fake_confirm
 print("--- with no region drawn, nothing may be counted")
 win._tick()
 check("the number is a dash", win.count_lbl.text(), "—")
-check("the verdict says which thing is missing", win.verdict.text(),
-      "ยังไม่ได้กำหนดกรอบนับ")
+check("the footer says which thing is missing",
+      win.note_lbl.text().startswith("ยังไม่ได้กำหนดกรอบนับ"), True)
 check("and saving is refused", win.save_btn.isEnabled(), False)
 
 # Everything below is about counting, so give it a tray to count in: the whole frame,
 # because what is being tested here is the pours, not the geometry.
 inf.roi = [(0, 0), (639, 0), (639, 479), (0, 479)]
 
-print("--- short on one tray: the button says so, and does NOT ask")
+print("--- short on one tray: the button is Keep, and a press banks rather than files")
 tray(47)
-check("button words", win.save_btn.text(), "บันทึกว่าไม่ครบ (ขาด 13)")
+check("button words", win.save_btn.text(), "Keep")
 check("button skin", win.save_btn.objectName(), "warn")
 check("still pressable", win.save_btn.isEnabled(), True)
 fm = win.save_btn.fontMetrics()
 check("words fit the button", fm.horizontalAdvance(win.save_btn.text()) < win.save_btn.width() - 24, True)
-win._save()
+win._main_clicked(); win._tick()
 check("no question asked", asked, [])
-rec = json.load(open(max(glob.glob(os.path.join(RECORDS,"count_*.json")), key=os.path.getmtime), encoding="utf-8"))
-check("filed", rec["count"], 47)
-check("flagged short", rec["short"], True)
-check("difference", rec["difference"], -13)
+check("nothing filed", glob.glob(os.path.join(RECORDS, "count_*.json")), [])
+check("the 47 is banked instead", win.rounds, [47])
 
-print("--- complete: the button goes back to green")
-tray(60)
-check("button words", win.save_btn.text(), "บันทึกผล")
-check("button skin", win.save_btn.objectName(), "primary")
-win._save(); win._tick()
-rec = json.load(open(max(glob.glob(os.path.join(RECORDS,"count_*.json")), key=os.path.getmtime), encoding="utf-8"))
-check("not short", rec["short"], False)
-
-print("--- mid-pour, answered 'go back'")
-tray(35); win._take_round(); win._tick(); tray(0); tray(0)
-ANSWER["go"] = False
-before = len(glob.glob(os.path.join(RECORDS,"count_*.json")))
-win._save(); win._tick()
-check("it asked", asked, [(35, [35])])
-check("nothing filed", len(glob.glob(os.path.join(RECORDS,"count_*.json"))), before)
-check("the 35 is still there", win.rounds, [35])
-check("note", win.note, "ยกเลิกการบันทึก")
-
-print("--- ...then the second pour completes it, no question")
-asked.clear()
-tray(25)
+print("--- the second pour makes it exact: the button turns to Done, and files")
+tray(0); tray(0)
+check("swept, still Keep", (win.save_btn.text(), win.save_btn.isEnabled()), ("Keep", False))
+tray(13)
 check("total", win.count_lbl.text(), "60")
-check("button green again", win.save_btn.objectName(), "primary")
-win._save(); win._tick()
+check("button words", win.save_btn.text(), "Done")
+check("button skin", win.save_btn.objectName(), "primary")
+check("live", win.save_btn.isEnabled(), True)
+win._main_clicked(); win._tick()
 check("no question", asked, [])
 rec = json.load(open(max(glob.glob(os.path.join(RECORDS,"count_*.json")), key=os.path.getmtime), encoding="utf-8"))
-check("filed", (rec["count"], rec["rounds"], rec["short"]), (60, [35,25], False))
+check("filed", (rec["count"], rec["rounds"], rec["short"]), (60, [47, 13], False))
 check("rounds cleared", win.rounds, [])
 
-print("--- mid-pour, answered 'save anyway'")
-tray(35); win._take_round(); win._tick(); tray(0); tray(0)
-ANSWER["go"] = True; asked.clear()
-win._save(); win._tick()
-check("it asked", asked, [(35, [35])])
+print("--- complete on one tray: Done, green, files")
+tray(60)
+check("button words", win.save_btn.text(), "Done")
+check("button skin", win.save_btn.objectName(), "primary")
+win._main_clicked(); win._tick()
 rec = json.load(open(max(glob.glob(os.path.join(RECORDS,"count_*.json")), key=os.path.getmtime), encoding="utf-8"))
-check("filed", (rec["count"], rec["rounds"], rec["short"]), (35, [35], True))
-check("rounds cleared", win.rounds, [])
+check("not short", (rec["count"], rec["short"]), (60, False))
+
+print("--- over: Keep, and dead -- tablets come off first")
+before = len(glob.glob(os.path.join(RECORDS,"count_*.json")))
+tray(61)
+check("button words", win.save_btn.text(), "Keep")
+check("dead", win.save_btn.isEnabled(), False)
+win._main_clicked(); win._tick()
+check("nothing filed", len(glob.glob(os.path.join(RECORDS,"count_*.json"))), before)
+check("nothing banked", win.rounds, [])
+
+print("--- mid-pour, a press on Keep while short banks again, never files")
+tray(35); win._main_clicked(); win._tick(); tray(0); tray(0)
+tray(10); win._main_clicked(); win._tick()
+check("two pours banked", win.rounds, [35, 10])
+check("nothing filed", len(glob.glob(os.path.join(RECORDS,"count_*.json"))), before)
+check("never asked", asked, [])
+win._clear_rounds(); tray(0)
 
 print("--- no target set: nothing is filed, so nothing is asked either")
 # It used to file, with `short` false. See tests/test_no_target.py for why it no longer
@@ -144,6 +144,8 @@ check("and nothing filed", len(glob.glob(os.path.join(RECORDS, "count_*.json")))
 check("the pour survives", win.rounds, [12])
 
 print("--- the real dialog builds, with the safe answer as the default")
+# UNREACHABLE FROM THE BUTTON NOW -- a short total is Keep -- but _save() still carries the
+# question for anything that calls it directly, so the card it builds is still checked.
 # CLEARED FIRST, THEN SET. The other way round asks -- the target does not move
 # while a pour is banked without a question -- and this file drives the partial-save
 # dialog itself, so a second modal in the same run answers the wrong one.

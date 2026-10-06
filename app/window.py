@@ -13,7 +13,6 @@ font stops placing Thai tone marks correctly at this DPI.
 """
 from __future__ import annotations
 
-import glob
 import json
 import os
 import time
@@ -22,10 +21,10 @@ import cv2
 import numpy as np
 from PySide6.QtCore import (QEventLoop, QPropertyAnimation, QRectF, QSize, Qt,
                             QTimer, Signal)
-from PySide6.QtGui import (QColor, QFont, QImage, QPainter, QPainterPath, QPen,
-                           QPixmap)
-from PySide6.QtWidgets import (QFrame, QGraphicsOpacityEffect, QHBoxLayout,
-                               QLabel, QLineEdit, QProgressBar, QPushButton,
+from PySide6.QtGui import (QColor, QFont, QFontMetrics, QImage, QPainter, QPainterPath,
+                           QPen, QPixmap)
+from PySide6.QtWidgets import (QFrame, QGraphicsOpacityEffect, QGridLayout,
+                               QHBoxLayout, QLabel, QLineEdit, QPushButton,
                                QSizePolicy, QSlider, QVBoxLayout, QWidget)
 
 from . import LOGO, RECORDS, SETTINGS
@@ -73,13 +72,11 @@ DEAD_LINES = ("ตรวจสายกล้อง", "กำลังลอง�
 DRAW_MS = 16                # ~60 fps repaint, independent of the model
 MIN_ROI = 40                # frame pixels; the shortest side a usable region can have
 ZOOM_STEP = 5               # one press of - or +, one arrow key; 20 presses end to end
+SAVE_MAX_H = 144            # the save button plus the "กำหนดกรอบนับ" row it replaced
+SHOW_RECORDS = False        # the "ดูรายการที่บันทึก" button in the header; hidden for now
 
-#: Widget pixels a press may travel and still count as a tap on one spot.
-#:
-#: A corner is placed on RELEASE, not on press, so that sliding off before letting go
-#: takes the tap back -- the affordance every button on every screen already has, and the
-#: one that matters most when what is being placed is a corner of the counting region.
-TAP_SLOP = 8
+#: How near a corner of the region a press has to land to pick it up, in widget pixels.
+GRAB_PX = 28
 
 #: How many corners a region takes. FOUR, and the shape closes itself on the fourth.
 #:
@@ -89,6 +86,12 @@ TAP_SLOP = 8
 #: box that ate the bench beside the tray and one that cut its far corners off. Four
 #: corners cost four taps and buy the shape the tray actually has.
 ROI_POINTS = 4
+
+#: A NEW REGION STARTS AS A RECTANGLE, this fraction of the frame clear of each edge, and
+#: each corner is then dragged onto the tray's own. Something to move is quicker to get
+#: right than four taps placed from nothing, and dragging one corner at a time still
+#: gives an angled camera's trapezoid.
+ROI_INSET = 0.10
 
 #: Said in the footer while the save button is dead, so the grey button is never a mystery.
 OVER_NOTE = "เกินจำนวนที่ต้องการ  นำออกก่อนจึงบันทึกได้"
@@ -102,7 +105,9 @@ BANKED_OVER_NOTE = ("เก็บไปแล้ว {n} เม็ด  เกิ�
 NO_ROI_NOTE = "ยังไม่ได้กำหนดกรอบนับ  กดตั้งค่ากล้องเพื่อกำหนดกรอบ"
 #: The same fact said INSIDE the camera settings, where "กดตั้งค่ากล้อง" would send the
 #: operator to the button they have just pressed.
-SETUP_NO_ROI_NOTE = "ยังไม่มีกรอบนับ  กดกำหนดกรอบนับแล้วแตะมุมถาด 4 จุด"
+SETUP_NO_ROI_NOTE = "ยังไม่มีกรอบนับ  กดกำหนดกรอบนับ แล้วลากมุมให้ตรงมุมถาด"
+#: Said while the corners may be dragged.
+ROI_DRAG_NOTE = "ลากมุมกรอบให้ตรงมุมถาด  เสร็จแล้วกดบันทึก"
 #: Why the counting buttons are dead while the camera is being set up.
 SETUP_NOTE = "กำลังตั้งค่ากล้อง  กดบันทึกหรือยกเลิกก่อน"
 #: Said when somebody reaches the save with an empty tray and nothing banked.
@@ -166,9 +171,18 @@ PANEL_FITS = ((104, 14, 24, True), (92, 14, 24, True), (80, 12, 20, True),
               (68, 10, 16, True), (68, 8, 14, False), (56, 8, 12, False),
               (48, 6, 10, False), (44, 4, 8, False))
 
-#: Header + footer + the body's top and bottom margins: everything between the window and
-#: the height the two cards get to share.
-CHROME_H = 72 + 56 + 40
+#: The counting card's width: its least on the 1366 bench, its most on a wide screen.
+PANEL_MIN_W, PANEL_MAX_W = 430, 600
+
+#: The most the count is ever grown to, however much room the card has.
+COUNT_MAX_PX = 200
+
+#: The two figures either side of the count: what was asked for, and how far off it is.
+SIDE_PX = 36
+
+#: Header + the body's top and bottom margins: everything between the window and the
+#: height the two cards get to share. (The footer's 56 went with the footer.)
+CHROME_H = 72 + 40
 
 
 # --------------------------------------------------------------------------- settings
@@ -231,6 +245,14 @@ def quad(points, size, min_side=MIN_ROI):
     if wide < min_side or tall < min_side or area < min_side * min_side:
         return None
     return ring
+
+
+def default_quad(size, inset=ROI_INSET):
+    """A new region: the rectangle ROI_INSET clear of each edge, in quad()'s order."""
+    w, h = int(size[0]), int(size[1])
+    dx, dy = int(w * inset), int(h * inset)
+    return quad([(dx, dy), (w - 1 - dx, dy), (w - 1 - dx, h - 1 - dy), (dx, h - 1 - dy)],
+                size)
 
 
 def roi_path(camera):
@@ -396,17 +418,6 @@ def recolour(label, colour):
     label.setStyleSheet(getattr(label, "base", "") + f" color: {colour};")
 
 
-def badge_css(pair) -> str:
-    """A tint behind dark text, rebuilt from the label's own font rule.
-
-    theme.badge_css exists and is not used here: it fixes the size at 16px, which is below
-    the 18px this screen holds to.
-    """
-    bg, fg = pair
-    return (f" background: {bg}; color: {fg}; border-radius: 999px; "
-            f"padding: 8px 22px;")
-
-
 def sized(widget, size, weight=QFont.DemiBold):
     """Give a BUTTON the font it will be painted with. The stylesheet alone is not enough.
 
@@ -433,7 +444,10 @@ def _rule() -> QFrame:
 
 
 class CameraView(QLabel):
-    """The live picture, and the corners of the counting region tapped onto it.
+    """The live picture, and the corners of the counting region dragged on it.
+
+    A NEW REGION IS A RECTANGLE (see default_quad) and each corner is then dragged onto the
+    tray's own, one at a time. What follows is why it is four corners and not a band.
 
     A CORNER AT A TIME, NOT A RUBBER BAND. The band was here first and was chosen for good
     reasons -- one gesture, no mode, and everybody already owns it from every photo tool
@@ -443,16 +457,16 @@ class CameraView(QLabel):
     the band left a choice between a box that took in the bench beside the tray and one
     that cut the far corners off -- and pills sit in corners.
 
-    Four taps cost three more gestures than a drag and buy the shape the tray actually has.
-    The order they are tapped in does not matter; see quad().
+    Four corners buy the shape the tray actually has. Dragging one across another does
+    not make a bow tie; see quad(), which runs on every drop.
 
     Every coordinate leaving this class is in FRAME pixels, the only space the model and the
     saved region agree on. The widget's own pixels stop meaning anything the moment somebody
     resizes the window.
     """
 
-    tapped = Signal(float, float)           # a corner, in frame coordinates
-    cancelled = Signal()                    # right click: take the last corner back
+    dragged = Signal(int, float, float)     # corner i moved to (x, y), frame coordinates
+    dropped = Signal()                      # the corner being dragged was let go
 
     def __init__(self):
         super().__init__()
@@ -469,17 +483,22 @@ class CameraView(QLabel):
         self.flip = False
         #: Is it shown turned half round. The same arrangement as the flip.
         self.rotate = False
-        self.arming = False                 # set by the window; drives the cursor
-        self._press_at = None               # where the button went down, for TAP_SLOP
+        #: The region's corners while they may be moved -- set by the window inside the
+        #: camera settings, None everywhere else. Frame pixels, like everything here.
+        self.handles = None
+        self._grab = None                   # which corner the mouse is holding
+        self.setMouseTracking(True)         # so the cursor can say a corner is under it
         #: Set while the camera is not working, cleared by the next frame that arrives.
         #: `_geom` is deliberately LEFT ALONE: it is the mapping the last real frame was
         #: drawn with, and the camera that comes back is the same camera at the same size,
         #: so a region drawn before the fault still lands where it was put.
         self._dead = False
 
-    def set_arming(self, on):
-        self.arming = on
-        self.setCursor(Qt.CrossCursor if on else Qt.ArrowCursor)
+    def set_handles(self, pts):
+        self.handles = list(pts) if pts else None
+        if self.handles is None:
+            self._grab = None
+            self.setCursor(Qt.ArrowCursor)
 
     def set_flip(self, on):
         self.flip = bool(on)
@@ -614,30 +633,52 @@ class CameraView(QLabel):
             y = self._fh - 1 - y
         return x, y
 
+    def _to_widget(self, x, y):
+        """Frame point -> widget point: _to_frame run backwards, mirror and all."""
+        if self._geom is None:
+            return None
+        x0, y0, scale = self._geom
+        if (self.flip != self.rotate) and self._fw:
+            x = self._fw - 1 - x
+        if self.rotate and self._fh:
+            y = self._fh - 1 - y
+        return x0 + x * scale, y0 + y * scale
+
+    def _near(self, pos):
+        """The corner within GRAB_PX of this widget point, the nearest one, or None."""
+        best, best_d = None, GRAB_PX * GRAB_PX
+        for i, (x, y) in enumerate(self.handles or ()):
+            at = self._to_widget(x, y)
+            if at is None:
+                return None
+            d = (at[0] - pos.x()) ** 2 + (at[1] - pos.y()) ** 2
+            if d <= best_d:
+                best, best_d = i, d
+        return best
+
     def mousePressEvent(self, ev):
-        if ev.button() == Qt.RightButton:
-            self._press_at = None
-            self.cancelled.emit()
+        if ev.button() != Qt.LeftButton or not self.handles:
             return
-        self._press_at = ev.position() if self.arming else None
+        self._grab = self._near(ev.position())
+        if self._grab is not None:
+            self.setCursor(Qt.ClosedHandCursor)
+
+    def mouseMoveEvent(self, ev):
+        if self._grab is not None:
+            point = self._to_frame(ev.position())
+            if point is not None:
+                self.dragged.emit(self._grab, *point)
+            return
+        if self.handles:
+            self.setCursor(Qt.OpenHandCursor if self._near(ev.position()) is not None
+                           else Qt.ArrowCursor)
 
     def mouseReleaseEvent(self, ev):
-        """The corner lands HERE, and only if the mouse did not wander on the way.
-
-        Placing it on the press would be a fraction more responsive and would give the
-        operator no way out of a click they had already started. Every button on every
-        screen lets you slide off before letting go; a corner of the region that decides
-        which pills are counted deserves at least as much.
-        """
-        start, self._press_at = self._press_at, None
-        if ev.button() != Qt.LeftButton or start is None or not self.arming:
+        if ev.button() != Qt.LeftButton or self._grab is None:
             return
-        here = ev.position()
-        if abs(here.x() - start.x()) > TAP_SLOP or abs(here.y() - start.y()) > TAP_SLOP:
-            return
-        point = self._to_frame(here)
-        if point is not None:
-            self.tapped.emit(*point)
+        self._grab = None
+        self.setCursor(Qt.OpenHandCursor)
+        self.dropped.emit()
 
 
 class Tick(QWidget):
@@ -900,7 +941,6 @@ class Window(QWidget):
         self.capture, self.infer = capture, infer
         self.camera = camera
         self.target = int(target)
-        self.arming = False
         #: THE CAMERA IS SET UP IN A MODE OF ITS OWN, not from the counting screen. The zoom
         #: and the region are set once, when the camera is aimed, and then left alone for
         #: weeks; a slider and a "กำหนดกรอบ" button beside the count invited somebody to
@@ -929,8 +969,10 @@ class Window(QWidget):
         self._steady_at = 0.0               # when it last changed
         self._can_round = False             # set every repaint, alongside the button
         self._round_block = ""              # and why not, for the footer to say
-        self._save_kind = "primary"         # or "warn"; restyled only when it changes
+        self._save_kind = "warn"            # or "primary"; restyled only when it changes
+        self._main = "keep"                 # what the big button does now: keep or done
         self._reset_armed_at = 0.0          # the two-press guard on starting over
+        self._wipe_armed_at = 0.0           # and on รีเซ็ต, while pours are banked
         #: Show the picture left-to-right reversed. A webcam is built to be pointed at a
         #: face and hands over a mirror image because that is what a face expects; a tray
         #: does not, and the operator reaches left for a tablet the screen shows on the
@@ -947,10 +989,12 @@ class Window(QWidget):
         zoom = load_zoom(camera)
         if zoom is not None and hasattr(capture, "set_zoom"):
             capture.set_zoom(zoom)
-        self.pending = []                   # corners tapped so far, in frame pixels
+        #: The region as it was before the corner being dragged began to move, so a drop
+        #: that leaves no usable shape can put it back.
+        self._grab_was = None
         self.note = ""                      # footer message
         self._fit = None                    # the PANEL_FITS entry now applied
-        self._bar_colour = None             # so the bar is restyled only on a change
+        self._gap_shown = None              # (figure, colour) in the ขาด/เกิน column
         self._block = ""                    # why saving is refused; "" when it is allowed
         self._block_kind = ""               # "fault", "over", "setup" -- see _tick
         self._was_fault = False             # was the last block one worth a noise
@@ -988,7 +1032,12 @@ class Window(QWidget):
         row.addWidget(self._panel(), 0)
         row.addWidget(self._setup_card(), 0)
         root.addWidget(body, 1)
-        root.addWidget(self._footer())
+        # THE FOOTER IS NOT SHOWN, at the operator's request. It is still built: the note
+        # behind it is the window's record of what was last said, which the code and the
+        # tests read, and showing it again is one line.
+        footer = self._footer()
+        root.addWidget(footer)
+        footer.setVisible(False)
 
         self.view.set_flip(self.flip)
         self.view.set_rotate(self.rotate)
@@ -998,9 +1047,8 @@ class Window(QWidget):
             if pts:
                 self.infer.roi = pts
             self.note = why
-        self._disarm()
+        self._show_handles()
 
-        self._meta()
         self.toast = Toast(self)
         self.ask_box = Ask(self)
         self.timer = QTimer(self)
@@ -1114,9 +1162,6 @@ class Window(QWidget):
             QPushButton#zoomstep:hover {{ background: {T.GREEN_TINT};
                                           border-color: {T.GREEN_500}; }}
             QPushButton#zoomstep:pressed {{ background: {T.LINE}; }}
-            QProgressBar {{ background: {T.LINE}; border: 0; border-radius: 6px;
-                            min-height: 12px; max-height: 12px; }}
-            QProgressBar::chunk {{ border-radius: 6px; background: {T.GREEN_500}; }}
             QLineEdit {{ font-family: {T.FONT_STACK}; border: 1px solid {T.LINE_STRONG};
                          border-radius: {T.R_SM}px; padding: 12px;
                          font-size: 28px; font-weight: 700; }}
@@ -1155,11 +1200,16 @@ class Window(QWidget):
         self.setup_btn.setObjectName("topbtn")
         self.setup_btn.clicked.connect(self._setup_open)
         lay.addWidget(self.setup_btn)
-        lay.addSpacing(12)
         self.list_btn = sized(QPushButton("ดูรายการที่บันทึก"), 19)
         self.list_btn.setObjectName("topbtn")
         self.list_btn.clicked.connect(self._show_records)
-        lay.addWidget(self.list_btn)
+        # HIDDEN FOR NOW. Flip SHOW_RECORDS to bring the button back; the records window
+        # behind it is untouched.
+        if SHOW_RECORDS:
+            lay.addSpacing(12)
+            lay.addWidget(self.list_btn)
+        else:
+            self.list_btn.hide()
         # "ส่งออก CSV" USED TO SIT HERE and has gone to the records window, where the rows
         # it writes are. Exporting is an errand for the end of a shift; it was up here
         # because the header had room, which is not a reason for a control to be anywhere,
@@ -1174,57 +1224,40 @@ class Window(QWidget):
     # -------------------------------------------------------------------------- panel
     def _panel(self):
         card = _card()
-        card.setFixedWidth(430)
+        card.setFixedWidth(PANEL_MIN_W)
         self.panel = card
         lay = self.panel_lay = QVBoxLayout(card)
         lay.setContentsMargins(24, 24, 24, 24)
         lay.setSpacing(14)
 
-        # THE VERDICT GOES IN THE CORNER, hard against the panel's right edge, and it is
-        # the first thing in the panel rather than a caption under the figure.
-        #
-        # A caption is read after the thing it captions. This is not a caption: the figure
-        # is a number somebody has to compare against another number, and the word --
-        # ครบ, เกิน, ขาด -- IS the answer. Up here it is where an eye coming off the tray
-        # lands, and it is in the same place as the phone's.
-        vrow = QHBoxLayout()
-        vrow.addStretch(1)
-        self.verdict = styled(QLabel("พร้อมนับ"), 26, QFont.Bold)
-        vrow.addWidget(self.verdict)
-        lay.addLayout(vrow)
-        self._set_badge(T.BADGE_IDLE)
-
-        # WHERE THE BIG NUMBER CAME FROM, and only when that is a question. On one pour it
-        # says nothing and takes no room, because on one pour the figure below is simply
-        # what the camera can see and a caption explaining that would be noise. From the
-        # second pour on, the figure is PARTLY MEMORY -- 35 of it is in a bottle and cannot
-        # be checked against the picture -- and a number on a screen that the picture does
-        # not corroborate has to say so out loud, or the operator has no way to tell a
-        # working total from a stuck one.
-        self.rounds_lbl = styled(QLabel(""), 19, QFont.DemiBold, T.INK_SOFT)
-        self.rounds_lbl.setAlignment(Qt.AlignCenter)
-        self.rounds_lbl.setVisible(False)
-        lay.addWidget(self.rounds_lbl)
-
+        # THREE FIGURES IN A ROW at the top of the panel, with the subtraction done: what
+        # was asked for, what has been counted, and what is still missing. The word -- ขาด
+        # or เกิน -- is the heading of the third column, so the answer is still in words
+        # and not only in a colour. The phone draws the same row.
+        top = QGridLayout()
+        top.setHorizontalSpacing(8)
+        top.setVerticalSpacing(0)
+        for col, words in ((0, "ยอดที่ต้องการ"), (1, "ยอดสะสม")):
+            head = styled(QLabel(words), 18, QFont.DemiBold, T.INK_SOFT)
+            head.setAlignment(Qt.AlignCenter)
+            top.addWidget(head, 0, col)
+        self.diff_title = styled(QLabel("ยอดที่ขาด"), 18, QFont.DemiBold, T.INK_SOFT)
+        self.diff_title.setAlignment(Qt.AlignCenter)
+        top.addWidget(self.diff_title, 0, 2)
+        self.want_lbl = styled(QLabel("—"), SIDE_PX, QFont.Bold, T.INK)
+        self.want_lbl.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
+        top.addWidget(self.want_lbl, 1, 0)
+        self.diff_lbl = styled(QLabel("—"), SIDE_PX, QFont.Bold, T.INK_MUTED)
+        self.diff_lbl.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
+        top.addWidget(self.diff_lbl, 1, 2)
         self.count_lbl = styled(QLabel("0"), PANEL_FITS[0][0], QFont.ExtraBold,
                                 T.GREEN_700)
-        self.count_lbl.setAlignment(Qt.AlignCenter)
-        lay.addWidget(self.count_lbl)
+        self.count_lbl.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
+        top.addWidget(self.count_lbl, 1, 1)
+        top.setColumnStretch(1, 1)
+        lay.addLayout(top)
 
-        # THE VERDICT IS A BADGE NOW: tinted pill, dark text, sized to its words. Plain
-        # coloured text had to carry the whole judgement on hue and weight alone; a filled
-        # shape is visible from further back, and the dark-text-on-tint pairing keeps it
-        # legible under the fluorescent strip this bench sits beneath. The words stay --
-        # the colour is still not the message.
-
-        # HOW FAR ALONG, without having to do the subtraction. The number says 47 and the
-        # target says 60; the bar says "nearly there" before either has been read, which is
-        # what somebody glancing up from the tray actually wants. It hides itself when no
-        # target is set, because a progress bar towards nothing is decoration.
-        self.progress = QProgressBar()
-        self.progress.setTextVisible(False)
-        self.progress.setRange(0, 100)
-        lay.addWidget(self.progress)
+        # NO PROGRESS BAR: the third column already does the subtraction, in a number.
 
         lay.addWidget(_rule())
 
@@ -1237,7 +1270,8 @@ class Window(QWidget):
         # exactly that. Clear it, or type it; the box between them is still typeable too.
         self.clear_btn = sized(QPushButton("เคลียร์"), 19)
         self.clear_btn.setObjectName("ghost")
-        self.clear_btn.clicked.connect(lambda: self._set_target(0))
+        # Only the number, never the pours, so there is nothing to ask about.
+        self.clear_btn.clicked.connect(self._clear_target)
         trow.addWidget(self.clear_btn)
         self.target_edit = sized(QLineEdit(str(self.target)), 28, QFont.Bold)
         self.target_edit.setAlignment(Qt.AlignCenter)
@@ -1265,17 +1299,11 @@ class Window(QWidget):
 
         lay.addStretch(1)
 
-        # THE ROUND CONTROLS SIT ABOVE THE REGION CONTROLS, and the order is the order of
-        # the job: the region is set once when the camera is aimed and then never touched,
-        # while these two are pressed once per pour, with a tray in the other hand. The
-        # thing used every minute belongs nearer the thumb than the thing used every week.
+        # THE WAYS BACK sit in a row above the big button: นับใหม่ and รีเซ็ต. Keeping a
+        # pour is no longer a button of its own -- it is what the big button does until
+        # the count is complete. See _main_clicked.
         rrow = QHBoxLayout()
         rrow.setSpacing(10)
-
-        self.round_btn = sized(QPushButton("เก็บรอบที่ 1"), 19)
-        self.round_btn.setObjectName("ghost")
-        self.round_btn.clicked.connect(self._take_round)
-        rrow.addWidget(self.round_btn, 1)
 
         # THE WAY OUT, and it throws the whole total away rather than one pour.
         #
@@ -1289,7 +1317,13 @@ class Window(QWidget):
         self.reset_btn = sized(QPushButton("นับใหม่"), 19)
         self.reset_btn.setObjectName("ghost")
         self.reset_btn.clicked.connect(self._reset_clicked)
-        rrow.addWidget(self.reset_btn)
+        rrow.addWidget(self.reset_btn, 1)
+        # AND THE WAY ALL THE WAY OUT: the prescription number goes too. นับใหม่ keeps it,
+        # because a recount is of the same prescription; this is for the next one.
+        self.wipe_btn = sized(QPushButton("รีเซ็ต"), 19)
+        self.wipe_btn.setObjectName("ghost")
+        self.wipe_btn.clicked.connect(self._wipe_clicked)
+        rrow.addWidget(self.wipe_btn, 1)
         lay.addLayout(rrow)
 
         # THE REGION IS NOT SET FROM HERE ANY MORE. "กำหนดกรอบนับ" sat in this row, and
@@ -1297,11 +1331,19 @@ class Window(QWidget):
         # one more control to rule out in a hurry, and one slip from moving which pills
         # are counted. It lives in the camera settings now, with the zoom. See _setup_card.
 
-
-        self.save_btn = sized(QPushButton("บันทึกผล"), 22, QFont.Bold)
-        self.save_btn.setObjectName("primary")
-        self.save_btn.clicked.connect(self._save)
-        lay.addWidget(self.save_btn)
+        # THE SAVE TAKES THE ROOM IT LEFT. It grows into the panel's slack up to SAVE_MAX_H
+        # and no further: its size hint is unchanged, so the fitter in resizeEvent sees
+        # the same panel, and on a tall screen the rest still goes to the stretch above.
+        # ONE BIG BUTTON, two jobs, and the count decides which: Keep while the total is
+        # short (bank what is on the tray, sweep it into the bottle, pour again), Done once
+        # it is exactly what was asked for (file the record). Over is neither: tablets
+        # come off the tray first.
+        self.save_btn = sized(QPushButton("Keep"), 22, QFont.Bold)
+        self.save_btn.setObjectName("warn")
+        self.save_btn.clicked.connect(self._main_clicked)
+        self.save_btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        self.save_btn.setMaximumHeight(SAVE_MAX_H)
+        lay.addWidget(self.save_btn, 1)
         return card
 
     # ------------------------------------------------------------------------- camera
@@ -1320,8 +1362,8 @@ class Window(QWidget):
         tray. See CameraView.paintEvent.
         """
         self.view = CameraView()
-        self.view.tapped.connect(self._corner)
-        self.view.cancelled.connect(self._corner_undo)
+        self.view.dragged.connect(self._corner_moved)
+        self.view.dropped.connect(self._corner_dropped)
         return self.view
 
     def _zoom_bar(self):
@@ -1370,7 +1412,7 @@ class Window(QWidget):
 
         IT TAKES THE COUNTING PANEL'S PLACE rather than opening a window over the picture,
         because the picture is what is being set: the zoom has to be watched as it moves
-        and the corners are tapped on it.
+        and the corners are dragged on it.
         """
         card = _card()
         card.setFixedWidth(430)
@@ -1453,7 +1495,7 @@ class Window(QWidget):
         self.panel.setVisible(False)
         self.setup_panel.setVisible(True)
         self.setup_btn.setVisible(False)
-        self._disarm()
+        self._show_handles()
         self.note = "ปรับซูม แล้วกำหนดกรอบนับ  เสร็จแล้วกดบันทึก"
 
     def _setup_save(self):
@@ -1463,9 +1505,6 @@ class Window(QWidget):
         nothing, and the way to fix that is back in here -- so it is said here instead.
         """
         if not self.setup:
-            return
-        if self.arming:
-            self._roi_prompt()
             return
         if not self.infer.roi:
             self.note = "ยังไม่มีกรอบนับ  กำหนดกรอบนับก่อนจึงบันทึกได้"
@@ -1484,7 +1523,6 @@ class Window(QWidget):
         if not self.setup:
             return
         zoom, roi, rotate, flip = self._setup_was or (None, None, self.rotate, self.flip)
-        self._disarm()
         self._set_rotate(rotate)
         self._set_flip(flip)
         if (zoom is not None and zoom != getattr(self.capture, "zoom", None)
@@ -1500,7 +1538,8 @@ class Window(QWidget):
     def _setup_close(self):
         self.setup = False
         self._setup_was = None
-        self._disarm()
+        self._grab_was = None
+        self._show_handles()
         self.setup_panel.setVisible(False)
         self.panel.setVisible(True)
         self.setup_btn.setVisible(True)
@@ -1522,46 +1561,23 @@ class Window(QWidget):
         self.note_lbl = styled(QLabel(""), 18, QFont.Bold, T.GREEN_700)
         lay.addWidget(self.note_lbl)
         lay.addStretch(1)
-        # How long the model takes. It sat on the picture's caption row, which has gone;
-        # it is a number for whoever is tuning the machine, and that is what a footer is.
-        self.ms_lbl = styled(QLabel(""), 18, QFont.Normal, T.INK_MUTED)
-        lay.addWidget(self.ms_lbl)
-        self.meta_lbl = styled(QLabel(""), 18, QFont.Normal, T.INK_MUTED)
-        lay.addWidget(self.meta_lbl)
+        # NOTHING ON THE RIGHT ANY MORE. The model's time, conf, iou, imgsz and the record
+        # count sat here; they are numbers for whoever tunes the machine, not for the
+        # person counting, and they went at the operator's request.
         return bar
 
     # ------------------------------------------------------------------------ actions
-    def _set_badge(self, pair):
-        self.verdict.setStyleSheet(self.verdict.base + badge_css(pair))
-
-    def _meta(self):
-        """The footer's right-hand side: the settings, and how much has been saved today.
-
-        Both are things somebody asks about once an hour and never while counting, which is
-        exactly what a footer is for. The record count is read from disk, so it is worked
-        out when a record is written and when the window opens -- never on the repaint.
-        """
-        try:
-            saved = len(glob.glob(os.path.join(RECORDS, "count_*.json")))
-        except OSError:
-            saved = 0
-        self.meta_lbl.setText(
-            f"conf {self.infer.conf}   iou {self.infer.iou}   "
-            f"imgsz {getattr(self.infer, 'imgsz_text', self.infer.imgsz)}   "
-            f"บันทึกไว้ {saved} รายการ")
-
     # ------------------------------------------------------------------------- rounds
     def banked(self) -> int:
         """Tablets already counted and already tipped out of the tray."""
         return sum(self.rounds)
 
     def _take_round(self):
-        """Freeze what is on the tray into the total, and refuse the tray until it is empty.
+        """Freeze what is on the tray into the total, and keep counting what the camera sees.
 
-        The guard is not the disabled button repeated for neatness. A disabled button is a
-        drawing; the rule that a pour is only counted when the figure has settled, the
-        picture is alive and the tray has been seen empty since the last pour is what stops
-        the same tablets being counted twice, and it has to live where the addition happens.
+        NO WAIT FOR AN EMPTY TRAY, at the operator's request: the total is what was kept
+        plus what is on the tray now, from the next frame. Sweeping the kept tablets off
+        is the operator's job -- left on the tray they are counted again.
         """
         if not self._can_round:
             self.note = self._round_block or self.note
@@ -1571,12 +1587,20 @@ class Window(QWidget):
             return
         self.rounds.append(int(count))
         self.round_shots.append((frame, boxes, confs))
-        self.clearing = True
         self._steady_n = None               # the stillness timer restarts on the new state
         sound.round_taken()
-        self.note = CLEAR_NOTE
+        self.note = ""                      # no sweep warning, at the operator's request
         self.toast.flash(f"เก็บรอบที่ {len(self.rounds)}  {count} เม็ด",
-                         f"สะสมแล้ว {self.banked()} เม็ด   {CLEAR_NOTE}")
+                         f"สะสมแล้ว {self.banked()} เม็ด")
+
+    def _main_clicked(self):
+        """The big button: Keep while short, Done on the exact count."""
+        if not self.save_btn.isEnabled():
+            return                          # the rule lives here, not only in the drawing
+        if self._main == "done":
+            self._save()
+        else:
+            self._take_round()
 
     def _reset_clicked(self):
         """Start the prescription again. TWICE, because the total cannot be got back.
@@ -1586,16 +1610,36 @@ class Window(QWidget):
         so it cannot be recovered by looking at anything. Arming the button and saying on
         it what the next press costs turns an accident into two accidents in a row.
         """
-        if not (self.rounds or self.clearing):
+        if not self.rounds:
             return
         if time.time() - self._reset_armed_at < CONFIRM_S:
             banked = self.banked()
+            # What was kept goes; what is on the tray now is counted as a first pour.
             self._clear_rounds()
             self.note = f"เริ่มนับใหม่  ทิ้งยอดสะสม {banked} เม็ดแล้ว"
             return
         self._reset_armed_at = time.time()
         self.note = (f"จะทิ้งยอดสะสม {self.banked()} เม็ด  "
                      "กดอีกครั้งเพื่อเริ่มนับใหม่")
+
+    def _wipe_clicked(self):
+        """Everything back to zero: the number asked for and every banked pour.
+
+        Twice when there are pours banked, for the reason นับใหม่ is: they cannot be got
+        back. Once when there is only the number, which can simply be set again.
+        """
+        if not (self.target or self.rounds or self.clearing):
+            return
+        armed = time.time() - self._wipe_armed_at < CONFIRM_S
+        if (self.rounds or self.clearing) and not armed:
+            self._wipe_armed_at = time.time()
+            self.note = (f"จะทิ้งยอดสะสม {self.banked()} เม็ด และจำนวนที่ต้องการ  "
+                         "กดอีกครั้งเพื่อรีเซ็ต")
+            return
+        self._clear_rounds()
+        self.target = 0
+        self.target_edit.setText("0")
+        self.note = "รีเซ็ตแล้ว"
 
     def _clear_rounds(self):
         """Back to a single-pour screen. After a save, or when the operator starts over."""
@@ -1604,6 +1648,7 @@ class Window(QWidget):
         self.clearing = False
         self._steady_n = None
         self._reset_armed_at = 0.0
+        self._wipe_armed_at = 0.0
 
     def _set_target(self, value):
         """Set the prescription, or ask first when pours are already past it.
@@ -1628,6 +1673,11 @@ class Window(QWidget):
                 return
         self.target = want
         self.target_edit.setText(str(self.target))
+
+    def _clear_target(self):
+        """เคลียร์: the number asked for goes; ยอดสะสม stays. รีเซ็ต takes both."""
+        self.target = 0
+        self.target_edit.setText("0")
 
     def _ask_retarget(self, want) -> bool:
         """True to take the new number and start over, False to keep the old one."""
@@ -1683,7 +1733,7 @@ class Window(QWidget):
         A CAMERA SETTING, like the half turn beside it: shown at once, written by the
         settings' บันทึก and put back by their ยกเลิก. It used to be written the moment it
         was pressed, from a button that was later hidden; back on screen, it has to keep
-        the rules of the panel it sits in. Corners already tapped stay, as for the turn.
+        the rules of the panel it sits in. The region stays, as for the turn.
         """
         self._set_flip(not self.flip)
         self.note = "พลิกภาพซ้าย-ขวาแล้ว" if self.flip else "เลิกพลิกภาพแล้ว"
@@ -1697,8 +1747,8 @@ class Window(QWidget):
         """Turn the picture half round, or back. Shown at once, written on บันทึก.
 
         Exactly the flip's design -- the frame is never touched, the drawing is turned on
-        its way to the screen and CameraView turns every tap back -- so the region, any
-        corners already tapped, the model and the saved JPEG are all left where they are.
+        its way to the screen and CameraView turns every tap back -- so the region, the
+        model and the saved JPEG are all left where they are.
         It differs from the flip in one thing only: it is a camera setting, so like the zoom
         it is kept by the settings' บันทึก and put back by their ยกเลิก.
         """
@@ -1728,11 +1778,9 @@ class Window(QWidget):
         if self._zoom_syncing:
             return
         self.capture.set_zoom(value)
-        if self.arming:
-            self._disarm()                  # corners tapped on the old picture
         if self.infer.roi:
             self.infer.roi = None
-            self._disarm()
+            self._show_handles()
             self.note = "ซูมแล้ว กรอบเดิมไม่ตรงกับภาพ  กำหนดกรอบใหม่"
 
     def _sync_zoom(self):
@@ -1767,67 +1815,57 @@ class Window(QWidget):
         self.target_edit.selectAll()
 
     def _roi_clicked(self):
-        """Start placing corners, or stop if they are already being placed.
+        """A new region: the default rectangle, every corner ready to be dragged.
 
         Only inside the camera settings: from anywhere else it opens them first, so a
         region can never be changed without the บันทึก that writes it.
         """
-        if self.arming:
-            self._disarm()
-            return
         self._setup_open()
-        self.arming = True
-        self.pending = []
-        self.view.set_arming(True)
-        self.roi_btn.setText("หยุดวางมุม")
-        self._roi_prompt()
-
-    def _corner(self, x, y):
-        """One corner placed. The fourth closes the shape and sets the region."""
-        if not self.arming:
+        frame, _ = self.capture.latest()
+        if frame is None:
             return
-        self.pending.append((x, y))
-        if len(self.pending) < ROI_POINTS:
-            self._roi_prompt()
+        self.infer.roi = default_quad((frame.shape[1], frame.shape[0]))
+        self._show_handles()
+        self.note = ROI_DRAG_NOTE
+
+    def _corner_moved(self, i, x, y):
+        """One corner follows the mouse. Checked on the drop, not on every move."""
+        roi = self.infer.roi
+        if not self.setup or not roi or not 0 <= i < len(roi):
+            return
+        if self._grab_was is None:
+            self._grab_was = list(roi)
+        frame, _ = self.capture.latest()
+        if frame is not None:
+            x = min(max(x, 0), frame.shape[1] - 1)
+            y = min(max(y, 0), frame.shape[0] - 1)
+        roi = list(roi)
+        roi[i] = (int(x), int(y))
+        self.infer.roi = roi
+        self.view.set_handles(roi)
+
+    def _corner_dropped(self):
+        """The corner let go: the shape tidied by quad(), or put back if it is unusable."""
+        was, self._grab_was = self._grab_was, None
+        if was is None or not self.infer.roi:
             return
         frame, _ = self.capture.latest()
         size = (frame.shape[1], frame.shape[0]) if frame is not None else (0, 0)
-        pts = quad(self.pending, size)
+        pts = quad(self.infer.roi, size)
         if pts is None:
-            # The four corners enclose nothing worth counting -- tapped on one spot, or
-            # strung out in a line. Only the last one is dropped: three good corners and a
-            # slip is the likely case, and throwing all four away would make the operator
-            # pay for the slip four times.
-            self.pending.pop()
-            self.note = f"มุมนี้แคบเกินไป  แตะให้ห่างจากมุมอื่นกว่า {MIN_ROI} จุดภาพ"
-            return
-        self.infer.roi = pts
-        self._disarm()
-        self.note = "กำหนดกรอบแล้ว  กดบันทึกเพื่อใช้กรอบนี้"
+            # Folded flat or squeezed thin. Only this drag is undone; the corners already
+            # placed stay where they were put.
+            self.infer.roi = was
+            self.note = f"มุมนี้แคบเกินไป  ลากให้ห่างจากมุมอื่นกว่า {MIN_ROI} จุดภาพ"
+        else:
+            self.infer.roi = pts
+            self.note = ROI_DRAG_NOTE
+        self._show_handles()
 
-    def _corner_undo(self):
-        """Right click, or the second button: the last corner back, then the whole mode."""
-        if not self.arming:
-            return
-        if self.pending:
-            self.pending.pop()
-            self._roi_prompt()
-            return
-        self._disarm()
-
-    def _roi_prompt(self):
-        """What the footer says while corners are going down, and what the row offers."""
-        left = ROI_POINTS - len(self.pending)
-        self.note = (f"แตะมุมถาดทีละมุม  อีก {left} จุด"
-                     "     คลิกขวาเพื่อถอยจุดล่าสุด")
-
-    def _disarm(self):
-        self.arming = False
-        self.pending = []
-        self.view.set_arming(False)
-        self.roi_btn.setText("กำหนดกรอบใหม่" if self.infer.roi
-                             else "กำหนดกรอบนับ")
-        self.note = ""
+    def _show_handles(self):
+        """Hand the corners to the picture while they may be moved, and name the button."""
+        self.view.set_handles(self.infer.roi if self.setup else None)
+        self.roi_btn.setText("กำหนดกรอบใหม่" if self.infer.roi else "กำหนดกรอบนับ")
 
     def _persist(self):
         frame, _ = self.capture.latest()
@@ -1851,11 +1889,6 @@ class Window(QWidget):
             # saved, and may yet be cancelled. A count filed now is a count through
             # settings that might never have existed.
             self.note = SETUP_NOTE
-            return
-        if self.arming:
-            # Mid-gesture the number on screen was measured through a region that is about
-            # to be replaced. Filing it would record a figure nobody can reproduce.
-            self._roi_prompt()
             return
         if self._block:
             self.note = self._block
@@ -1939,7 +1972,6 @@ class Window(QWidget):
             cv2.imwrite(os.path.join(RECORDS, f"count_{stamp}.jpg"), frame)
         detail = f"  ({' + '.join(str(n) for n in rounds)})" if len(rounds) > 1 else ""
         self.note = f"บันทึกแล้ว {total} เม็ด{detail}"
-        self._meta()
         target = f"  จากที่ต้องการ {self.target}" if self.target else ""
         sound.saved()
         self.toast.flash(f"บันทึกแล้ว  {total} เม็ด{detail}",
@@ -2015,8 +2047,6 @@ class Window(QWidget):
         dialog.exec()
         if dialog.note:
             self.note = dialog.note
-        # The footer counts what is on disk, and that window can now delete from it.
-        self._meta()
 
     def _export(self):
         """Straight to a CSV of everything saved, without going through the list first.
@@ -2033,12 +2063,7 @@ class Window(QWidget):
     def _draw_roi(self, shown):
         """The region, drawn two different ways on purpose.
 
-        WHILE THE CORNERS ARE GOING DOWN each one is a bright ring with its number beside
-        it, joined by the edges so far, and the shape closes itself the moment the fourth
-        lands. The numbers are there because they answer the question the operator has --
-        how many more -- on the picture they are looking at rather than in the footer they
-        are not.
-
+        IN THE CAMERA SETTINGS each corner is a bright ring, the handle it is dragged by.
         RINGS, NOT FILLED DOTS. A corner of a full tray has a pill under it, and a solid
         mark would hide the very thing the corner is being placed around.
 
@@ -2047,20 +2072,6 @@ class Window(QWidget):
         background information, and a bright box over a tray that is being worked in would
         compete with the markers, which are the thing that has to be visible.
         """
-        if self.arming:
-            pts = [(int(x), int(y)) for x, y in self.pending]
-            if len(pts) > 1:
-                cv2.polylines(shown, [np.array(pts, np.int32).reshape(-1, 1, 2)],
-                              False, ROI_BAND, 2, cv2.LINE_AA)
-            for i, (x, y) in enumerate(pts, start=1):
-                cv2.circle(shown, (x, y), 9, (0, 0, 0), 4, cv2.LINE_AA)
-                cv2.circle(shown, (x, y), 9, ROI_BAND, 2, cv2.LINE_AA)
-                cv2.putText(shown, str(i), (x + 14, y - 10), cv2.FONT_HERSHEY_SIMPLEX,
-                            0.7, (0, 0, 0), 4, cv2.LINE_AA)
-                cv2.putText(shown, str(i), (x + 14, y - 10), cv2.FONT_HERSHEY_SIMPLEX,
-                            0.7, ROI_BAND, 2, cv2.LINE_AA)
-            return
-
         pts = self.infer.roi or []
         if len(pts) < 3:
             return
@@ -2069,7 +2080,16 @@ class Window(QWidget):
         cv2.fillPoly(wash, [poly], ROI_LINE)
         cv2.addWeighted(wash, 0.10, shown, 0.90, 0, shown)
         cv2.polylines(shown, [poly], True, ROI_LINE, 2, cv2.LINE_AA)
-        self._corner_ticks(shown, pts, ROI_LINE, 22, 3)
+        if not self.setup:
+            self._corner_ticks(shown, pts, ROI_LINE, 22, 3)
+            return
+        # Sized to the frame, which is scaled down onto the screen: a fixed size would be
+        # a dot on a 1080p camera and a blob on a 480p one.
+        r = max(9, round(min(shown.shape[:2]) / 36))
+        t = max(2, r // 5)
+        for x, y in pts:
+            cv2.circle(shown, (int(x), int(y)), r, (0, 0, 0), t * 3, cv2.LINE_AA)
+            cv2.circle(shown, (int(x), int(y)), r, ROI_BAND, t, cv2.LINE_AA)
 
     @staticmethod
     def _corner_ticks(shown, pts, colour, length, width):
@@ -2112,7 +2132,7 @@ class Window(QWidget):
     def _tick(self):
         self._sync_zoom()
         frame, _ = self.capture.latest()
-        (boxes, confs, count, ms), _ = self.infer.result()
+        (boxes, confs, count, _ms), _ = self.infer.result()
         # Asked once, used three times: the pane goes black on it, the save button obeys
         # it and the footer names it, so the three can never disagree about whether the
         # camera is alive.
@@ -2150,7 +2170,7 @@ class Window(QWidget):
         if self.clearing and count == 0 and steady >= CLEAR_S:
             self.clearing = False
             if self.note == CLEAR_NOTE:
-                self.note = "ถาดว่างแล้ว  เทรอบต่อไปได้"
+                self.note = ""
         live = 0 if self.clearing else count
         total = self.banked() + live
         # NO REGION, NO NUMBER. Not a zero and not the count of the whole picture -- a
@@ -2158,41 +2178,31 @@ class Window(QWidget):
         # part of the bench is the tray there is nothing to make that claim about.
         self.count_lbl.setText("—" if not self.infer.roi else str(total))
 
-        if self.clearing:
-            strip = (f"เก็บแล้ว {len(self.rounds)} รอบ  รวม {self.banked()} เม็ด"
-                     f"   ·   รอกวาดถาด")
-        elif self.rounds:
-            strip = (f"เก็บแล้ว {len(self.rounds)} รอบ  รวม {self.banked()}"
-                     f"   +   ในถาด {live}")
-        else:
-            strip = ""
-        if strip != self.rounds_lbl.text():
-            self.rounds_lbl.setText(strip)
-            self.rounds_lbl.setVisible(bool(strip))
-        round_text = f"เก็บรอบที่ {len(self.rounds) + 1}"
-        if round_text != self.round_btn.text():
-            self.round_btn.setText(round_text)
-
         # The verdict is words as well as colour. A dispensary is not the place to make
         # somebody read a hue: colour-blindness aside, a glance across a room resolves a
         # word faster than a shade of orange.
-        if not self.infer.roi:
-            text, colour, pair = "ยังไม่ได้กำหนดกรอบนับ", T.INK_MUTED, T.BADGE_IDLE
-        elif self.target:
+        # The third column's heading carries that word: ยอดที่ขาด, or ยอดที่เกิน.
+        want = str(self.target) if self.target else "—"
+        if not self.infer.roi or not self.target:
+            colour, title, gap = T.INK_MUTED, "ยอดที่ขาด", "—"
+        else:
             diff = total - self.target
             if diff == 0:
-                text, colour, pair = "ครบตามจำนวน", T.GREEN_700, T.BADGE_OK
+                colour, title, gap = T.GREEN_700, "ยอดที่ขาด", "0"
             elif diff > 0:
-                text, colour, pair = f"เกิน {diff} เม็ด", T.WARN, T.BADGE_WARN
+                colour, title, gap = T.WARN, "ยอดที่เกิน", str(diff)
             else:
-                text, colour, pair = f"ขาด {-diff} เม็ด", T.DANGER, T.BADGE_BAD
-        else:
-            text, colour, pair = "ยังไม่กำหนดจำนวน", T.INK_MUTED, T.BADGE_IDLE
-        if text != self.verdict.text():
-            # Only on a change: restyling a widget makes Qt reparse the rule, and this runs
-            # sixty times a second.
-            self.verdict.setText(text)
-            self._set_badge(pair)
+                colour, title, gap = T.DANGER, "ยอดที่ขาด", str(-diff)
+        # Only on a change: restyling a widget makes Qt reparse the rule, and this runs
+        # sixty times a second.
+        if want != self.want_lbl.text():
+            self.want_lbl.setText(want)
+        if title != self.diff_title.text():
+            self.diff_title.setText(title)
+        if (gap, colour) != self._gap_shown:
+            self._gap_shown = (gap, colour)
+            self.diff_lbl.setText(gap)
+            recolour(self.diff_lbl, colour)
 
         # WHAT WOULD MAKE THIS SAVE A LIE, in the order that matters.
         #
@@ -2252,8 +2262,6 @@ class Window(QWidget):
             round_block = block
         elif self.setup:
             round_block = SETUP_NOTE
-        elif self.arming:
-            round_block = "กำลังกำหนดกรอบนับ  วางมุมให้ครบก่อน"
         elif self.clearing:
             round_block = CLEAR_NOTE
         elif count <= 0:
@@ -2264,35 +2272,24 @@ class Window(QWidget):
             round_block = ""
         self._round_block = round_block
         self._can_round = not round_block
-        self.round_btn.setEnabled(self._can_round)
         armed_reset = time.time() - self._reset_armed_at < CONFIRM_S
         reset_text = "กดอีกครั้ง" if armed_reset else "นับใหม่"
         if reset_text != self.reset_btn.text():
             self.reset_btn.setText(reset_text)
         # Live while there is a total to discard, INCLUDING mid-sweep: the tray that has
         # just been banked is exactly the moment somebody notices it was the wrong tray.
-        self.reset_btn.setEnabled(bool(self.rounds or self.clearing))
+        self.reset_btn.setEnabled(bool(self.rounds))
+        armed_wipe = time.time() - self._wipe_armed_at < CONFIRM_S
+        wipe_text = "กดอีกครั้ง" if armed_wipe else "รีเซ็ต"
+        if wipe_text != self.wipe_btn.text():
+            self.wipe_btn.setText(wipe_text)
+        self.wipe_btn.setEnabled(bool(self.target or self.rounds or self.clearing))
 
-        # THE SAVE BUTTON SAYS WHAT IT IS ABOUT TO FILE, and a short count is filed under
-        # protest. Saving under the target stays possible on purpose -- the stock runs out,
-        # and a screen that refuses to record 47 of 60 does not create the missing thirteen,
-        # it just sends the number onto a scrap of paper where nothing can audit it. What
-        # was wrong was that it looked identical to filing a complete one: same green, same
-        # word, and the operator learns the gesture rather than the state. So the button
-        # keeps the job and loses the disguise.
-        # AND AT ZERO IT SAYS NOTHING AND DOES NOTHING. A record of no tablets is not a
-        # short count -- it is the screen as it was found, before anybody poured anything,
-        # and filing it puts a row in the book that says a prescription was dispensed empty.
-        # The window opens in this state and stays in it between every tray, which is
-        # exactly when a stray press lands. So the button is dead, and it drops the orange
-        # "ขาด 60" coat with it: a control that cannot be pressed should not also be
-        # shouting about a shortfall nobody has caused yet.
-        if total <= 0:
-            save_text, save_kind = "บันทึกผล", "primary"
-        elif self.target and total < self.target:
-            save_text, save_kind = f"บันทึกว่าไม่ครบ (ขาด {self.target - total})", "warn"
-        else:
-            save_text, save_kind = "บันทึกผล", "primary"
+        # KEEP OR DONE. Done only on the exact count -- there is no filing a short one
+        # from here any more; short means pour again, over means take some off.
+        done = bool(self.target) and total == self.target
+        self._main = "done" if done else "keep"
+        save_text, save_kind = ("Done", "primary") if done else ("Keep", "warn")
         if save_text != self.save_btn.text():
             self.save_btn.setText(save_text)
         if save_kind != self._save_kind:
@@ -2314,43 +2311,26 @@ class Window(QWidget):
                     sound.problem()         # once, on the way in, not every frame
             elif self.note == was_note or self.note == "" or was_broken:
                 self.note = ""
-        # SET EVERY TICK, not only when the block changes: `arming` is not a block -- it
-        # has no message, because the footer is already saying how many corners are left,
-        # which is better advice than a refusal could give -- so nothing above would ever
-        # notice it going on and off.
-        # AND A NUMBER HAS TO HAVE BEEN ASKED FOR. A count with no target is a count
+        # A NUMBER HAS TO HAVE BEEN ASKED FOR. A count with no target is a count
         # nobody can check: the record carries 8 tablets and nothing to compare them
         # against, so the one question anybody opens it to ask -- was this dispensed
-        # correctly -- has no answer in it, and never will. The verdict badge has been
-        # saying "ยังไม่กำหนดจำนวน" in that state all along; now the save agrees with it.
-        self.save_btn.setEnabled(not self._block and not self.arming and not self.setup
-                                 and total > 0 and bool(self.target))
+        # correctly -- has no answer in it, and never will. The ยอดที่ต้องการ column shows
+        # a dash in that state; the save agrees with it.
+        if done:
+            # Done waits for the figure to settle, as Keep does: a count that touches
+            # the target for one frame on its way past is not a complete prescription.
+            live_ok = (not self._block and not self.setup and total > 0
+                       and steady >= SETTLE_S)
+        else:
+            live_ok = (bool(self.target) and total < self.target and self._can_round)
+        self.save_btn.setEnabled(live_ok)
         if self.setup:
-            self.setup_save_btn.setEnabled(bool(self.infer.roi) and not self.arming)
-            roi_state = ("วางมุมถาดบนภาพทีละมุม" if self.arming
-                         else "กำหนดกรอบแล้ว" if self.infer.roi
+            self.setup_save_btn.setEnabled(bool(self.infer.roi))
+            roi_state = ("กำหนดกรอบแล้ว  ลากมุมบนภาพเพื่อปรับ" if self.infer.roi
                          else "ยังไม่ได้กำหนดกรอบนับ")
             if roi_state != self.roi_state.text():
                 self.roi_state.setText(roi_state)
         recolour(self.count_lbl, colour if self.target else T.GREEN_700)
-
-        # The bar is coloured with the verdict, not with the fill: at 61 of 60 a full green
-        # bar would say "done" while the words beside it say there is one too many.
-        if self.target:
-            self.progress.setVisible(True)
-            self.progress.setValue(min(100, int(total * 100 / self.target)))
-        else:
-            self.progress.setVisible(False)
-        if colour != self._bar_colour:
-            self._bar_colour = colour
-            self.progress.setStyleSheet(
-                f"QProgressBar::chunk {{ border-radius: 6px; background: {colour}; }}")
-
-        # Chips are restyled only when their words change. setStyleSheet reparses the rule
-        # every time it is called, and this runs sixty times a second.
-        ms_text = f"model {ms:.0f} ms" if ms else ""
-        if ms_text != self.ms_lbl.text():
-            self.ms_lbl.setText(ms_text)
 
         self.clock.setText(time.strftime("%H:%M"))
         self.note_lbl.setText(self.note)
@@ -2391,13 +2371,51 @@ class Window(QWidget):
             return                          # setFont below re-enters resizeEvent
         self._fitting = True
         try:
+            self._fit = None                # the count may have been grown past its fit
+            # WIDER ON A WIDE SCREEN. 430 is what a 1366 bench can spare beside the
+            # picture; on a 1920 screen the card takes its share, and the count, which
+            # three digits had pinned to the width of its column, grows into it.
+            width = max(PANEL_MIN_W, min(PANEL_MAX_W, int(self.width() * 0.3)))
+            if width != self.panel.width():
+                self.panel.setFixedWidth(width)
+                self.panel.parentWidget().layout().activate()
             for fit in PANEL_FITS:
                 self._apply_fit(fit)
                 if (self.panel_lay.sizeHint().height() <= available
                         or fit is PANEL_FITS[-1]):
+                    self._grow_count(available)
                     return
         finally:
             self._fitting = False
+
+    def _grow_count(self, available):
+        """ยอดสะสม AS BIG AS THE CARD ALLOWS, past the fit's own size.
+
+        The fit gives up size on the count first when height is short; this is the other
+        direction: whatever height is left over goes back into the figure, up to the
+        width of its column -- measured for three digits, so a total that reaches 100
+        does not suddenly need more room than it was given.
+        """
+        count_px = self._fit[0]
+        # The middle column's own width, as the grid gave it out at the fit's size: the
+        # outer two keep what their headings need, and the stretch hands it the rest.
+        self.count_lbl.setText("")
+        self.panel_lay.invalidate()
+        self.panel_lay.activate()
+        room = self.count_lbl.width()
+        best = count_px
+        for px in range(count_px + 4, COUNT_MAX_PX + 1, 4):
+            styled(self.count_lbl, px, QFont.ExtraBold, T.GREEN_700)
+            self.panel_lay.invalidate()
+            self.panel_lay.activate()
+            wide = QFontMetrics(self.count_lbl.font()).horizontalAdvance("888")
+            if wide > room or self.panel_lay.sizeHint().height() > available:
+                break
+            best = px
+        styled(self.count_lbl, best, QFont.ExtraBold, T.GREEN_700)
+        self.count_lbl.setText("0")           # _tick writes the real figure within 16ms
+        self.panel_lay.invalidate()
+        self.panel_lay.activate()
 
     def _apply_fit(self, fit):
         if fit == self._fit:

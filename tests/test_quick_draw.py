@@ -82,9 +82,10 @@ for view in ((1280, 800), (2340, 1080), (1920, 1080)):
     sc.target = 60
     sc._act("setup", None, None)
     same("in the camera settings", sc, 7)
-    sc.arming = True
-    sc.pending = [(100, 100), (500, 120)]
-    same("corners going down", sc, 7)
+    sc.roi = [(64, 48), (64, 431), (575, 431), (575, 48)]
+    sc.grab = 0
+    same("a corner being dragged", sc, 7)
+    sc.grab = None
     sc._act("setup-cancel", None, None)
     sc.say("กำหนดกรอบแล้ว")
     same("a note in the footer", sc, 7)

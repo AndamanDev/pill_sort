@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""The phone's multi-round counting, driven the way the bridge drives it."""
+"""The phone's multi-round counting, driven the way the bridge drives it.
+
+There is no keep-a-pour button of its own any more: the big button is Keep while the
+total is short (a tap banks the tray) and Done on the exact count (a tap files it).
+"""
 import os, sys, json, glob, time, shutil, tempfile
 
 HERE = os.path.abspath(os.path.dirname(__file__))
@@ -75,15 +79,13 @@ def missing(s):
 sc.rounds, sc.clearing = [35], False
 sc._steady_n = 25
 phrases = [
-    f"เก็บรอบที่ {len(sc.rounds) + 1}", "นับใหม่", "กดอีกครั้ง", "บันทึกผล",
-    f"บันทึกว่าไม่ครบ ขาด {13}", f"แตะอีกครั้งเพื่อบันทึก {35}",
+    "Keep", "Done", "นับใหม่", "รีเซ็ต", "กดอีกครั้ง", "ยังไม่กำหนดจำนวน",
     "เก็บแล้ว 1 รอบ รวม 35 เม็ด   รอกวาดถาด",
     "เก็บแล้ว 1 รอบ รวม 35 + ในถาด 25",
-    screen_mod.CLEAR_NOTE, "ถาดว่างแล้ว เทรอบต่อไปได้",
+    screen_mod.CLEAR_NOTE,
     "ถาดว่าง ยังไม่มีอะไรให้เก็บ", "ตัวเลขยังไม่นิ่ง รอสักครู่",
     "เริ่มนับใหม่ ทิ้งยอดสะสม 35 เม็ดแล้ว", "จะทิ้งยอดสะสม 35 เม็ด กดอีกครั้งเพื่อเริ่มนับใหม่",
     "เก็บรอบที่ 1 35 เม็ด", "สะสมแล้ว 35 เม็ด",
-    "ยังเทค้างอยู่ ยอดสะสมจะถูกล้าง แตะอีกครั้งเพื่อบันทึก 35",
 ]
 gaps = {p: missing(p) for p in phrases if missing(p)}
 check("missing glyphs", gaps, {})
@@ -94,11 +96,12 @@ print("--- the panel still holds its controls")
 tray(35)
 PANEL = (28, 104, 772, 896)
 rects = {n: r for n, r in sc.hits if n in
-         ("target-", "target+", "type-target", "round", "reset", "save")}
-# Six now: the region's button went to the camera settings with the zoom, and
-# "ล้างกรอบ" went before it -- a region is what makes counting possible, so a
-# control whose only effect is to remove one has no use.
+         ("target-", "target+", "type-target", "reset", "zero", "save")}
+# Six: the region's button went to the camera settings with the zoom, and "ล้างกรอบ"
+# went before it -- a region is what makes counting possible, so a control whose only
+# effect is to remove one has no use. The keep-a-pour button went into the big one.
 check("all six controls drawn", len(rects), 6)
+check("and no separate keep-a-pour button", "round" in dict(sc.hits), False)
 check("and the way into the settings", "setup" in dict(sc.hits), True)
 bottom = max(r[1] + r[3] for r in rects.values())
 check("nothing past the panel", bottom <= PANEL[1] + PANEL[3], True)
@@ -116,10 +119,9 @@ print("--- and the words fit inside the buttons they are drawn in")
 def fits(rect, txt, px):
     return sc.text.measure(txt, px) <= rect[2] - 20
 wide = []
-for txt, px, name in ((f"เก็บรอบที่ 9", 28, "round"), ("นับใหม่", 28, "reset"), ("กดอีกครั้ง", 28, "reset"),
-                      ("บันทึกผล", 38, "save"),
-                      ("บันทึกว่าไม่ครบ ขาด 100", 32, "save"),
-                      ("แตะอีกครั้งเพื่อบันทึก 100", 30, "save")):
+for txt, px, name in (("นับใหม่", 28, "reset"), ("กดอีกครั้ง", 28, "reset"),
+                      ("รีเซ็ต", 28, "zero"), ("กดอีกครั้ง", 28, "zero"),
+                      ("Keep", 44, "save"), ("Done", 44, "save")):
     if not fits(rects[name], txt, px):
         wide.append((name, txt, sc.text.measure(txt, px), rects[name][2]))
 check("no button text overflows", wide, [])
@@ -130,7 +132,7 @@ tray(35)
 check("total", sc.total(35), 35)
 check("verdict", sc._verdict(sc.total(35))[1], "ขาด 25 เม็ด")
 check("a pour may be taken", sc.round_block(), "")
-check("save button is the warning one", sc._save_look(), "warn")
+check("the big button is Keep", sc.main_action(), "keep")
 
 print("--- the number is still moving: no pour may be taken")
 paint(34)
@@ -138,26 +140,31 @@ check("unsettled refuses", sc.round_block(), "ตัวเลขยังไม�
 tray(35)
 check("settled again", sc.round_block(), "")
 
-print("--- take pour 1")
-tap("round")
+print("--- take pour 1, by tapping Keep")
+check("Keep files nothing", tap("save"), 0)
 check("rounds", sc.rounds, [35])
 check("a picture was kept", len(sc.round_frames), 1)
-check("total holds at 35 with 35 still on the tray", sc.total(35), 35)
-check("a second tap is refused", sc.round_block(), screen_mod.CLEAR_NOTE)
-tap("round")
+# NO WAIT FOR A SWEEP: what the camera sees is added straight on, so 35 left on the
+# tray is counted a second time. Sweeping is the operator's job, by their choice.
+check("the unswept 35 is counted on top", sc.total(35), 70)
+check("not waiting for a sweep", sc.clearing, False)
+check("no sweep warning", sc.note, "")
+check("a second tap is refused straight away", bool(sc.round_block()), True)
+tap("save")
 check("and refused in the method too", sc.rounds, [35])
 
 print("--- sweep: the tray empties")
 tray(0)
 check("still 35 after the sweep", sc.total(0), 35)
 check("clearing over", sc.clearing, False)
+check("and no sweep note anywhere", sc.note != screen_mod.CLEAR_NOTE, True)
 check("empty tray offers nothing to take", sc.round_block(), "ถาดว่าง ยังไม่มีอะไรให้เก็บ")
 
 print("--- pour 2: 25 more")
 tray(25)
 check("total", sc.total(25), 60)
 check("verdict", sc._verdict(sc.total(25))[1], "ครบตามจำนวน")
-check("save button is green again", sc._save_look(), "primary")
+check("the big button turns to Done", sc.main_action(), "done")
 check("saving is allowed", sc.blocked, "")
 
 print("--- one too many")
@@ -165,8 +172,18 @@ tray(26)
 check("total", sc.total(26), 61)
 check("save refused", sc.blocked, "เกินจำนวนที่ต้องการ นำออกก่อนจึงบันทึกได้")
 check("pour refused too", sc.round_block(), sc.blocked)
+check("and the button is Keep, not Done", sc.main_action(), "keep")
+check("a tap banks nothing", (tap("save"), sc.rounds), (0, [35]))
 tray(25)
 check("allowed again", sc.blocked, "")
+
+print("--- Done waits for the number to settle, as Keep does")
+paint(24); paint(25)
+sc._steady_at = time.time()             # just changed, however slow the frame above was
+check("Done, but unsettled", (sc.main_action(), sc.steady()), ("done", False))
+check("a tap files nothing", tap("save"), 0)
+check("and says why", sc.note, "ตัวเลขยังไม่นิ่ง รอสักครู่")
+tray(25)
 
 print("--- save")
 n = tap("save")
@@ -181,7 +198,7 @@ check("rounds cleared after save", sc.rounds, [])
 
 # ------------------------------------------------------------------------------- undo
 print("--- starting over throws the whole total away, and takes two taps")
-tray(35); tap("round"); tray(0); tray(20)
+tray(35); tap("save"); tray(0); tray(20)
 check("total before", sc.total(20), 55)
 tap("reset")
 check("the first tap only arms it", sc.rounds, [35])
@@ -190,62 +207,59 @@ tap("reset")
 check("the second tap does it", sc.rounds, [])
 check("pictures too", sc.round_frames, [])
 tray(20)
-check("total after", sc.total(20), 20)
+check("total after: what is on the tray, as a first pour", sc.total(20), 20)
+check("nothing waits for a sweep", sc.clearing, False)
 
 print("--- the arming lapses, so a tap minutes later is a fresh first tap")
-tray(35); tap("round"); tray(0); tray(0)
+tray(0); tray(35); tap("save"); tray(0); tray(0)
 tap("reset")
 sc.reset_armed_at -= screen_mod.CONFIRM_SECONDS + 1
 tap("reset")
 check("it arms again rather than wiping", sc.rounds, [35])
 
-print("--- it also releases a tray that was never swept")
-sc.clear_rounds()
-tray(35); tap("round")
-check("clearing", sc.clearing, True)
-check("the button is live mid-sweep", bool(sc.rounds or sc.clearing), True)
+print("--- live mid-sweep while something is banked; dead once nothing is")
+sc.clear_rounds(); tray(0)
+tray(35); tap("save")
+check("not waiting for a sweep", sc.clearing, False)
+check("the button is live with a pour kept", bool(sc.rounds), True)
 tap("reset"); tap("reset")
-check("clearing cancelled", sc.clearing, False)
-tray(35)
-check("the tray counts again", sc.total(35), 35)
+check("the pour is gone", sc.rounds, [])
+check("and the unswept tray counts again at once", (sc.clearing, sc.total(35)), (False, 35))
+tap("reset"); tap("reset")
+check("with nothing banked a tap does nothing", (sc.rounds, sc.clearing, sc.reset_armed_at), ([], False, 0.0))
 
-# ------------------------------------------------------------- the mid-pour save guard
-print("--- a mid-pour save takes two taps")
+# ------------------------------------------------- a short total is never filed by a tap
+print("--- short with pours banked: the button is Keep, and Keep never files")
 sc.clear_rounds()
-tray(35); tap("round"); tray(0); tray(0)
+tray(35); tap("save"); tray(0); tray(0)
 before = len(glob.glob(os.path.join(RECORDS, "count_*.json")))
+check("Keep, on an empty tray", sc.main_action(), "keep")
 n = tap("save")
-check("the first tap files nothing", n, 0)
+check("a tap on the empty tray files nothing", n, 0)
 check("nothing on disk", len(glob.glob(os.path.join(RECORDS, "count_*.json"))), before)
 check("the 35 is still there", sc.rounds, [35])
-check("and it said why", "ยอดสะสมจะถูกล้าง" in sc.note, True)
-tray(0)
-check("the button now says what the next tap costs",
-      dict(sc.hits)["save"] is not None and
-      any(n == "save" for n, _ in sc.hits), True)
+check("and it said why", sc.note, "ถาดว่าง ยังไม่มีอะไรให้เก็บ")
+tray(10)
 n = tap("save")
-check("the second tap files it", n, 1)
+check("a second pour short of it is kept, not filed", (n, sc.rounds), (0, [35, 10]))
+check("nothing on disk", len(glob.glob(os.path.join(RECORDS, "count_*.json"))), before)
+tray(0); tray(15)
+check("the third makes it exact: Done", sc.main_action(), "done")
+n = tap("save")
+check("and Done files it", n, 1)
 rec = json.load(open(max(glob.glob(os.path.join(RECORDS, "count_*.json")), key=os.path.getmtime), encoding="utf-8"))
-check("filed", (rec["count"], rec["rounds"], rec["short"]), (35, [35], True))
+check("filed", (rec["count"], rec["rounds"], rec["short"]), (60, [35, 10, 15], False))
 check("rounds cleared", sc.rounds, [])
 
-print("--- the guard lapses, so a tap minutes later is not the second of a pair")
-tray(35); tap("round"); tray(0); tray(0)
-tap("save")
-sc.save_armed_at -= screen_mod.CONFIRM_SECONDS + 1
-before = len(glob.glob(os.path.join(RECORDS, "count_*.json")))
-n = tap("save")
-check("it arms again rather than filing", n, 0)
-check("nothing filed", len(glob.glob(os.path.join(RECORDS, "count_*.json"))), before)
-
-print("--- a short count on ONE tray files on the first tap")
+print("--- a short count on ONE tray is kept, not filed")
 sc.clear_rounds()
 tray(47)
-check("button warns", sc._save_look(), "warn")
+check("Keep", sc.main_action(), "keep")
+before = len(glob.glob(os.path.join(RECORDS, "count_*.json")))
 n = tap("save")
-check("filed at once", n, 1)
-rec = json.load(open(max(glob.glob(os.path.join(RECORDS, "count_*.json")), key=os.path.getmtime), encoding="utf-8"))
-check("flagged short", (rec["count"], rec["short"], rec["rounds"]), (47, True, [47]))
+check("nothing filed", n, 0)
+check("the tray was banked", sc.rounds, [47])
+check("nothing on disk", len(glob.glob(os.path.join(RECORDS, "count_*.json"))), before)
 
 print("--- no target: nothing is filed at all")
 # THIS USED TO FILE. A count with no prescription was saved with `short` false, on the
@@ -254,7 +268,7 @@ print("--- no target: nothing is filed at all")
 # it to ask has no answer in it. tests/test_no_target.py owns that rule now; what is
 # checked here is that the multi-round machinery honours it too, pours and all.
 sc.clear_rounds(); sc.target = 0
-tray(12); tap("round"); tray(0); tray(0)
+tray(12); sc._act("round", None, None); tray(0); tray(0)   # programmatic: no button for it
 check("the pour was banked", sc.rounds, [12])
 before = len(glob.glob(os.path.join(RECORDS, "count_*.json")))
 n = tap("save")
@@ -273,10 +287,9 @@ check("old record", rec_store.rounds_text({"count": 60}), "")
 check("one pour", rec_store.rounds_text({"rounds": [60]}), "")
 check("two pours", rec_store.rounds_text({"rounds": [35, 25]}), "35 + 25")
 rows = rec_store.load(RECORDS)
-# four saves happen above: the two-pour 60, the guarded 35, the short 47 and the
-# untargeted 12. The "guard lapses" section arms twice and files nothing, which is
-# the point of it.
-check("every record listed", len(rows), 3)
+# two saves happen above: the two-pour 60 and the three-pour 60. The short 47 and the
+# untargeted 12 file nothing, which is the point of them.
+check("every record listed", len(rows), 2)
 check("per-pour frames resolved", sum(len(r["round_paths"]) for r in rows) > 0, True)
 csv_path = os.path.join(RECORDS, "out.csv")
 rec_store.export_csv(rows, csv_path)

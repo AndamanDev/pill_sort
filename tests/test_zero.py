@@ -9,7 +9,11 @@ that has to be explained later.
 
 WHAT MUST NOT BREAK. Zero on the TRAY is not zero to file. Sweep 35 into the bottle and
 the tray is empty again while the total is 35, and that is precisely the moment somebody
-reaches for save. The rule is about the TOTAL, never the live count.
+reaches for the button. The rule is about the TOTAL, never the live count.
+
+The big button is Keep while the total is short and Done only on the exact count, so an
+empty tray now shows a dead Keep -- nothing to bank -- and 35 swept into the bottle still
+counts: the pour that brings the total to the target turns the button to Done.
 """
 import os, sys, tempfile, shutil, glob
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
@@ -62,9 +66,9 @@ def filed():
 print("--- the screen as it is found: region set, tray empty")
 tray(0)
 check("nothing is blocking, this is not a fault", win._block, "")
-check("but the save is dead", win.save_btn.isEnabled(), False)
-check("and it is not wearing the short-count coat", win.save_btn.objectName(), "primary")
-check("nor shouting about a shortfall", win.save_btn.text(), "บันทึกผล")
+check("the button is Keep, there being nothing to be Done with", win._main, "keep")
+check("but it is dead", win.save_btn.isEnabled(), False)
+check("because there is nothing to bank", win._can_round, False)
 
 print("--- and the button being dead is not the only thing stopping it")
 before = filed()
@@ -74,27 +78,38 @@ check("and it says why", win.note, W.NOTHING_NOTE)
 
 print("--- one tablet is enough to make it a real count")
 tray(1)
-check("live", win.save_btn.isEnabled(), True)
-check("short, so it says so", win.save_btn.objectName(), "warn")
-win._save()
+check("Keep, and live", (win._main, win.save_btn.isEnabled()), ("keep", True))
+check("orange, because it is short", win.save_btn.objectName(), "warn")
+tray(0)
+win._set_target(1)
+tray(1)
+check("asked for one: Done, and live", (win._main, win.save_btn.isEnabled()), ("done", True))
+win._main_clicked()
 check("filed", filed(), before + 1)
+tray(0)
+win._set_target(60)
 
 print("--- THE CASE THIS MUST NOT BREAK: swept into the bottle, tray empty, 35 banked")
 win._clear_rounds()
 tray(35)
-win._take_round()
+win._main_clicked()                     # Keep
 win._tick()
 tray(0); tray(0)
 check("the tray is empty", inf.n, 0)
 check("the total is not", win.banked(), 35)
-check("so the save is live", win.save_btn.isEnabled(), True)
-win._confirm_partial = lambda total, rounds: True       # its own suite covers the question
-win._save()
-check("and it files the 35, not a zero", filed(), before + 2)
+check("short, so Keep -- dead only because the tray is empty", (win._main, win.save_btn.isEnabled()),
+      ("keep", False))
+# The last pour makes it exact while it is still on the tray, so the button is Done
+# there -- the 35 in the bottle counts towards it as fully as the 25 in view.
+tray(25)
+check("35 banked + 25 on the tray: Done, and live", (win._main, win.save_btn.isEnabled()),
+      ("done", True))
+win._main_clicked()
+check("and it files the 60, not a zero", filed(), before + 2)
 import json
 rec = json.load(open(max(glob.glob(os.path.join(RECORDS, "count_*.json")),
                         key=os.path.getmtime), encoding="utf-8"))
-check("the record says 35", rec["count"], 35)
+check("the record says 60", (rec["count"], rec["rounds"]), (60, [35, 25]))
 
 print("--- with no region there is a block, and the save is dead for that reason instead")
 win._clear_rounds()
@@ -126,27 +141,35 @@ def paint(n=0):
 
 paint(0)
 check("nothing is blocking", sc.blocked, "")
-check("the save is dead", sc.live_total() > 0, False)
-check("and it keeps the plain coat", sc._save_look(), "primary")
+check("the button is Keep", sc.main_action(), "keep")
+check("and dead: nothing to bank", bool(sc.round_block()), True)
 
 print("--- a tap on the dead button answers instead of swallowing the press")
 saved = []
 sc._act("save", lambda: saved.append(1), None)
 check("nothing was filed", saved, [])
-check("and it said why", "ยังไม่มีเม็ดยาให้บันทึก" in sc.note, True)
+check("nor banked", sc.rounds, [])
+check("and it said why", "ถาดว่าง" in sc.note, True)
 
 print("--- ten on the tray, and it is a real count again")
 paint(10)
-check("live", sc.live_total() > 0, True)
-check("short, so it says so", sc._save_look(), "warn")
+check("Keep, and live", (sc.main_action(), sc.round_block()), ("keep", ""))
 
-print("--- swept away: tray empty, 35 banked, still saveable")
+print("--- swept away: tray empty, 35 banked; the next 25 makes it Done")
 paint(35)
-sc.take_round(F)
+sc._act("save", None, None)             # Keep
 paint(0); paint(0)
 check("banked", sc.rounds, [35])
 check("the tray is empty and the total is not", (sc.live_total(), sc.rounds), (35, [35]))
-check("live", sc.live_total() > 0, True)
+check("still Keep, dead with an empty tray", (sc.main_action(), bool(sc.round_block())),
+      ("keep", True))
+paint(25)
+check("35 banked + 25 on the tray", sc.live_total(), 60)
+check("Done, and live", (sc.main_action(), not sc.blocked and sc.live_total() > 0),
+      ("done", True))
+saved = []
+sc._act("save", lambda: saved.append(1), None)
+check("files", saved, [1])
 
 print("--- and the furniture is redrawn when the total crosses zero")
 # THE RULE HAS TO BE IN THE MEMO KEY OR NOBODY EVER SEES IT. The buttons are drawn once
@@ -177,8 +200,7 @@ check("and moved back", flicker(0), empty)
 print("--- and the new words have pictures")
 def missing(t):
     return [p for p, d in sc.text._runs(t) if sc.text._entry(p, d) is None]
-check("ยังไม่มีเม็ดยาให้บันทึก วางยาบนถาดก่อน",
-      missing("ยังไม่มีเม็ดยาให้บันทึก วางยาบนถาดก่อน"), [])
+check("ถาดว่าง ยังไม่มีอะไรให้เก็บ", missing("ถาดว่าง ยังไม่มีอะไรให้เก็บ"), [])
 
 shutil.rmtree(REC, ignore_errors=True)
 print()

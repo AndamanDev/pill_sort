@@ -183,10 +183,17 @@ MIN_ROI = 40               # frame pixels, as on the bench
 #: that took in the bench beside the tray and one that cut its far corners off. Pills sit
 #: in corners.
 ROI_POINTS = 4
+#: A new region starts as this rectangle -- the fraction of the frame left clear on each
+#: side -- and each corner is then dragged onto the tray's own. As on the bench.
+ROI_INSET = 0.10
+#: How near a corner of the region a finger has to land to pick it up, in design pixels.
+#: A thumb, not a cursor: the ring drawn there is smaller than what it answers to.
+GRAB = 80
 NOTE_SECONDS = 4.0
 TOAST_SECONDS = 1.8
 CONFIRM_SECONDS = 4.0      # how long a "tap again to confirm" stays armed
 THUMB_CACHE = 40
+SHOW_RECORDS = False       # the "ดูรายการที่บันทึก" button in the header; hidden for now
 
 #: Seconds the number must hold STILL before a pour may be taken from it, and the same
 #: seconds the tray must read EMPTY before the next pour may begin.
@@ -311,6 +318,14 @@ def quad(points, size, min_side=MIN_ROI):
     return ring
 
 
+def default_quad(size, inset=ROI_INSET):
+    """A new region: the rectangle ROI_INSET clear of each edge, in quad()'s order."""
+    w, h = int(size[0]), int(size[1])
+    dx, dy = int(w * inset), int(h * inset)
+    return quad([(dx, dy), (w - 1 - dx, dy), (w - 1 - dx, h - 1 - dy), (dx, h - 1 - dy)],
+                size)
+
+
 def short_when(rec):
     """"17 ก.ย. 10:24" -- the same compact stamp the desktop list shows."""
     when = rec_store.when(rec)
@@ -345,8 +360,8 @@ class Screen:
         #: valid at the resolution it was drawn at, and nothing knows that resolution
         #: until a camera frame arrives. See compose().
         self._roi_loaded = False
-        self.arming = False
-        self.pending = []                   # corners tapped so far, in frame pixels
+        self.grab = None                    # which corner of the region a finger is moving
+        self._grab_was = None               # the region before that drag, to put back
         self.note = ""
         self.note_at = 0.0
         self.toast = None                   # (title, detail, when)
@@ -394,6 +409,7 @@ class Screen:
         self._steady_at = 0.0               # when it last changed
         self.save_armed_at = 0.0            # the two-tap guard on a mid-pour save
         self.reset_armed_at = 0.0           # and on starting the prescription over
+        self.zero_armed_at = 0.0            # and on รีเซ็ต, while pours are banked
         self.quit_armed_at = 0.0            # and on closing the app
         #: Set by the second tap on the cross. Kotlin reads it off the touch reply and
         #: finishes the activity; nothing on this side can close a window.
@@ -549,7 +565,7 @@ class Screen:
         tray nobody is touching -- the detector does not run on a still picture, so nothing
         increments and nothing redraws.
         """
-        return (self.page, count, self.marks_at, self.target, self.blocked, self.arming,
+        return (self.page, count, self.marks_at, self.target, self.blocked, self.grab,
                 self.zoom, self.setup,
                 # The pours, and whether the number has held long enough to be taken. The
                 # steadiness is in here so that the moment it flips -- half a second after
@@ -560,7 +576,6 @@ class Screen:
                 if time.time() - self.save_armed_at < CONFIRM_SECONDS else 0,
                 round(self.quit_armed_at, 1)
                 if time.time() - self.quit_armed_at < CONFIRM_SECONDS else 0,
-                tuple(map(tuple, self.pending)),
                 None if self.roi is None else tuple(map(tuple, self.roi)),
                 self.filter, self.scroll, len(self.rows), stale > 1.5, error,
                 self.picking, self.pick_month, self.from_date, self.to_date, self.typing,
@@ -581,8 +596,7 @@ class Screen:
         composing it, which is the difference between a number that updates while somebody
         watches and one that arrives after they have looked away.
         """
-        return (self.page, self.target, self.arming, self.roi is not None,
-                len(self.pending),      # the row's second button counts them
+        return (self.page, self.target, self.roi is not None,
                 self.flip, self.rotate, self.zoom, self.setup,
                 # The value itself, not just the setting, while there is a pane at all --
                 # the slider is furniture, and it moves under a finger.
@@ -591,7 +605,8 @@ class Screen:
                 # with these: how many pours are banked, whether one may be taken now, and
                 # whether the save is about to file a short count or is armed to.
                 len(self.rounds), self.clearing, not self.round_block(),
-                self._save_look(),
+                self._save_look(), self.main_action(),
+                bool(self.target) and self.live_total() < self.target,
                 # AND WHETHER THERE IS ANYTHING TO FILE AT ALL. Caught on the board, not
                 # here: the save went dead at zero, and on screen it stayed green. Every
                 # other thing the button's state depends on was already in this key, so
@@ -602,6 +617,8 @@ class Screen:
                 self.live_total() > 0,
                 round(self.reset_armed_at, 1)
                 if time.time() - self.reset_armed_at < CONFIRM_SECONDS else 0,
+                round(self.zero_armed_at, 1)
+                if time.time() - self.zero_armed_at < CONFIRM_SECONDS else 0,
                 # The cross goes red while it is armed, and it is drawn into the template.
                 round(self.quit_armed_at, 1)
                 if time.time() - self.quit_armed_at < CONFIRM_SECONDS else 0,
@@ -975,15 +992,19 @@ class Screen:
             # the end of a shift; it was up here because the header had room, which is not
             # a reason for a control to be anywhere, and on a counting screen every button
             # that is not about the tray is one more thing to rule out in a hurry.
-            self.hits.append(("records", ui.button(
-                img, self.text, (W - 696, 12, 380, 64),
-                "ดูรายการที่บันทึก", 26, "ghost")))
+            # HIDDEN FOR NOW, as on the bench: flip SHOW_RECORDS to bring it back. Without
+            # it the camera settings move right into its place rather than float.
+            if SHOW_RECORDS:
+                self.hits.append(("records", ui.button(
+                    img, self.text, (W - 696, 12, 380, 64),
+                    "ดูรายการที่บันทึก", 26, "ghost")))
             # THE CAMERA SETTINGS BESIDE IT, and for the same reason: pressed once when the
             # phone is aimed and then left alone, which is an errand rather than a counting
             # control. Gone while they are open -- their panel has its own บันทึก and ยกเลิก.
             if not self.setup:
                 self.hits.append(("setup", ui.button(
-                    img, self.text, (W - 696 - 16 - 260, 12, 260, 64),
+                    img, self.text,
+                    (W - 696 - 16 - 260 if SHOW_RECORDS else W - 316 - 260, 12, 260, 64),
                     "ตั้งค่ากล้อง", 26, "ghost")))
 
     def _logo(self, img):
@@ -1017,35 +1038,11 @@ class Screen:
         a footer is for. The saved count comes from the list this screen already holds, so
         it costs nothing to say.
         """
-        note, colour = self._note_now()
-        if note:
-            self.text.draw(img, note, 34, H - 62, 28, colour)
-        # THE OTHER HALF OF THE FRAME BUDGET, which nothing on this screen has ever shown.
-        #
-        # The chip over the picture reports the MODEL's milliseconds. Composing this screen
-        # costs its own, and on a board thirty times slower than the desk it was written on
-        # that is not a rounding error -- it is potentially as large as the forward pass,
-        # and every guess about where the time goes has been made without it.
-        #
-        # Latin, deliberately: "draw" and "ms" come off the digit sheet, which carries the
-        # alphabet, so this needs no new word rendered into the atlas.
-        provider = f"   {self.provider}" if self.provider else ""
-        if self.provider and self.provider_ms:
-            provider += f" {self.provider_ms:.0f} ms"
-        # TO THE NEAREST TEN, and in three pieces drawn right to left. The settings and
-        # the record count hardly ever change, so each is one line the text sheet has
-        # already assembled; the times change every frame, and rounded they come round
-        # again often enough to be assembled once too. See Text._line.
-        drew = f"   draw {round(self.draw_ms, -1):.0f} ms" if self.draw_ms else ""
-        model_ms = getattr(self, "model_ms", 0.0)
-        if model_ms and self.page == "count":
-            drew = f"   model {round(model_ms, -1):.0f} ms" + drew
-        right = W - 34
-        for part in (f"   บันทึกไว้ {len(self.rows)} รายการ", drew,
-                     f"conf {self.conf}   iou {self.iou}   imgsz {self.imgsz}{provider}"):
-            if part:
-                right -= self.text.draw(img, part, right, H - 58, 24, ui.INK_MUTED,
-                                        align="right")
+        # NOT DRAWN, at the operator's request: the bottom strip is empty. `note` is still
+        # kept -- it is what the screen last said, and the tests and the bridge read it.
+        # NOTHING ON THE RIGHT ANY MORE. The model and draw times, conf, iou, imgsz and the
+        # record count sat here; they are numbers for whoever tunes the machine, not for
+        # the person counting, and they went at the operator's request.
 
     def _toast(self, img):
         if not self.toast:
@@ -1085,7 +1082,6 @@ class Screen:
             self._chrome_setup(img)
             return
 
-        self.text.draw(img, "เม็ด", C, 382, 28, ui.INK_MUTED, align="centre")
         self.text.draw(img, "จำนวนที่ต้องการ", L, 456, 28, ui.INK_SOFT)
 
         # WORDS, NOT PLUS AND MINUS. Stepping from 0 to 120 one press at a time is not a
@@ -1111,49 +1107,47 @@ class Screen:
                       "on" if n == self.target else "off")
             self.hits.append((f"preset{n}", rect))
 
-        # THE ROUND CONTROLS SIT ABOVE THE FRAME CONTROL, and the order is the order of
-        # the job: the frame is set once when the phone is propped over the bench and then
-        # never touched, while these two are tapped once per pour with a tray in the other
-        # hand. The thing used every minute belongs nearer the thumb.
-        self.hits.append(("round", ui.button(
-            img, self.text, (L, 676, 468, 88),
-            f"เก็บรอบที่ {len(self.rounds) + 1}", 28, "ghost",
-            enabled=not self.round_block())))
+        # THE WAYS BACK sit in a row above the big button: นับใหม่ and รีเซ็ต. Keeping a
+        # pour is no longer a button of its own -- it is what the big button does until
+        # the count is complete. See main_action.
         # Live while there is a total to discard, INCLUDING mid-sweep: the tray that has
         # just been banked is exactly the moment somebody notices it was the wrong tray.
         self.hits.append(("reset", ui.button(
-            img, self.text, (L + 480, 676, 228, 88),
+            img, self.text, (L, 676, 349, 88),
             "กดอีกครั้ง"
             if time.time() - self.reset_armed_at < CONFIRM_SECONDS else "นับใหม่",
-            28, "ghost", enabled=bool(self.rounds or self.clearing))))
+            28, "ghost", enabled=bool(self.rounds))))
+        # AND THE WAY ALL THE WAY OUT: the prescription number goes too. นับใหม่ keeps it,
+        # because a recount is of the same prescription; this is for the next one.
+        self.hits.append(("zero", ui.button(
+            img, self.text, (L + 359, 676, 349, 88),
+            "กดอีกครั้ง"
+            if time.time() - self.zero_armed_at < CONFIRM_SECONDS else "รีเซ็ต",
+            28, "ghost", enabled=bool(self.target or self.rounds or self.clearing))))
 
         # THE REGION IS NOT SET FROM HERE ANY MORE. Its button sat in this row, and it is
         # a thing done once when the phone is aimed -- beside the save it was one more
         # control to rule out in a hurry, and one slip from moving which pills are
         # counted. It lives in the camera settings now, with the zoom. See _chrome_setup.
+        # The save below grows up into the room it left (it began at 776).
 
-        # The save button says what it is about to file. Armed mid-pour it says what the
-        # next tap will cost, because that is the press worth hesitating over -- see _act.
-        armed = time.time() - self.save_armed_at < CONFIRM_SECONDS
-        if armed:
-            words, px = f"แตะอีกครั้งเพื่อบันทึก {self.live_total()}", 30
-        elif self._save_look() == "warn":
-            words, px = f"บันทึกว่าไม่ครบ ขาด {self.target - self.live_total()}", 32
+        # ONE BIG BUTTON, two jobs, and the count decides which: Keep while the total is
+        # short (bank what is on the tray, sweep it into the bottle, pour again), Done once
+        # it is exactly what was asked for (file the record). Over is neither: tablets
+        # come off the tray first. The PC's big button is the same.
+        # The region only changes inside the camera settings, and this button is not on
+        # screen while they are open -- so no count is filed through a half-moved region.
+        action = self.main_action()
+        if action == "done":
+            # Done waits for the figure to settle, as Keep does: a count that touches
+            # the target for one frame on its way past is not a complete prescription.
+            live = not self.blocked and self.live_total() > 0 and self.steady()
         else:
-            words, px = "บันทึกผล", 38
-        # DEAD WHILE THE REGION IS BEING REDRAWN, and it was not.
-        #
-        # Pressing "กำหนดกรอบใหม่" leaves the OLD region in place until a new one closes,
-        # which is right -- the picture would otherwise go blank mid-gesture. But it meant
-        # nothing was blocking the save, so a screen showing half a new region and a number
-        # measured through the old one would happily file that number. `arming` is not a
-        # fault and gets no message of its own: the footer is already saying how many
-        # corners are left, which is better advice than anything a refusal could add.
+            live = (bool(self.target) and self.live_total() < self.target
+                    and not self.round_block())
         self.hits.append(("save", ui.button(
-            img, self.text, (L, 872, 708, 92), words, px,
-            "warn" if armed or self._save_look() == "warn" else "primary",
-            enabled=not self.blocked and not self.arming and self.live_total() > 0
-                    and bool(self.target))))
+            img, self.text, (L, 776, 708, 188), "Done" if action == "done" else "Keep",
+            44, "primary" if action == "done" else "warn", enabled=live)))
 
     def _chrome_setup(self, img):
         """The camera settings, in the counting panel's place: half turn, zoom, region,
@@ -1186,20 +1180,17 @@ class Screen:
         cv2.line(img, (L, 584), (L + 708, 584), ui.LINE, 2)
 
         self.text.draw(img, "3  พื้นที่นับ", L, 612, 28, ui.INK_SOFT)
-        state = ("วางมุมถาดบนภาพทีละมุม" if self.arming
-                 else "กำหนดกรอบแล้ว" if self.roi else "ยังไม่ได้กำหนดกรอบนับ")
-        self.text.draw(img, state, L, 662, 26,
-                       ui.INK_MUTED if self.roi or self.arming else ui.WARN)
+        state = "กำหนดกรอบแล้ว ลากมุมบนภาพเพื่อปรับ" if self.roi else "ยังไม่ได้กำหนดกรอบนับ"
+        self.text.draw(img, state, L, 662, 26, ui.INK_MUTED if self.roi else ui.WARN)
         self.hits.append(("roi", ui.button(
             img, self.text, (L, 716, 708, 84),
-            "หยุดวางมุม" if self.arming
-            else ("กำหนดกรอบใหม่" if self.roi else "กำหนดกรอบนับ"), 28, "ghost")))
+            "กำหนดกรอบใหม่" if self.roi else "กำหนดกรอบนับ", 28, "ghost")))
 
         self.hits.append(("setup-cancel", ui.button(
             img, self.text, (L, 872, 260, 92), "ยกเลิก", 30, "ghost")))
         self.hits.append(("setup-save", ui.button(
             img, self.text, (L + 276, 872, 432, 92), "บันทึก", 38, "primary",
-            enabled=self.roi is not None and not self.arming)))
+            enabled=self.roi is not None)))
 
     def _zoom_bar(self, img):
         """The bench's zoom row: -, a track with a knob, +, and how close it is.
@@ -1251,8 +1242,6 @@ class Screen:
         value = max(ZOOM_MIN, min(ZOOM_MAX, int(value)))
         if value != self.zoom:
             self.zoom = value
-            self.arming = False
-            self.pending = []
             if self.roi is not None:
                 self.roi = None
                 self.say(ZOOM_NOTE)
@@ -1264,17 +1253,12 @@ class Screen:
         self.setup = True
         self._setup_was = (self.zoom, list(self.roi) if self.roi else None, self.rotate,
                            self.flip)
-        self.arming = False
-        self.pending = []
         self.say("ปรับซูมก่อน แล้วจึงกำหนดกรอบนับ")
 
     def setup_save(self, frame_shape=None):
         """Write the half turn, the zoom and the region, and go back to counting. Refused
         with no region."""
         if not self.setup:
-            return
-        if self.arming:
-            self._roi_prompt()
             return
         if self.roi is None:
             self.say("ยังไม่มีกรอบนับ กำหนดกรอบนับก่อนจึงบันทึกได้")
@@ -1307,8 +1291,8 @@ class Screen:
     def _setup_close(self):
         self.setup = False
         self._setup_was = None
-        self.arming = False
-        self.pending = []
+        self.grab = None
+        self._grab_was = None
         self._zoom_drag = False
 
     def _live_count(self, img, frame, boxes, count, ms, stale, quick=False):
@@ -1321,47 +1305,32 @@ class Screen:
         panel = (W - 800, 104, 772, 896)
         L, R, C = panel[0] + 32, panel[0] + panel[2] - 32, panel[0] + panel[2] // 2
         total = self.total(count)
-        kind, words, colour = self._verdict(total)
+        colour = self._verdict(total)[2]
 
-        # THE VERDICT GOES IN THE CORNER, hard against the panel's right edge.
-        #
-        # It sat under the figure, which is where a caption goes, and a caption is read
-        # after the thing it captions. This is not a caption: on a full tray the figure is
-        # a number somebody has to compare against another number, and the word -- ครบ,
-        # เกิน, ขาด -- IS the answer. Up here it is the first thing on the panel and the
-        # last thing before the edge of the screen, which is where an eye coming off the
-        # tray lands.
-        px = 30
-        w = self.text.measure(words, px) + int(px * 1.6)
-        ui.badge(img, self.text, int(R - w / 2), 112, words, px, kind)
-
-        # WHERE THE BIG NUMBER CAME FROM, and only when that is a question. On one pour it
-        # says nothing and takes no room, because on one pour the figure below is simply
-        # what the camera can see. From the second pour on the figure is PARTLY MEMORY --
-        # 35 of it is in a bottle and cannot be checked against the picture -- and a number
-        # the picture does not corroborate has to say so, or there is no way to tell a
-        # working total from a stuck one.
-        if self.clearing:
-            strip = (f"เก็บแล้ว {len(self.rounds)} รอบ รวม {self.banked()} เม็ด   "
-                     f"รอกวาดถาด")
-        elif self.rounds:
-            strip = (f"เก็บแล้ว {len(self.rounds)} รอบ รวม {self.banked()} "
-                     f"+ ในถาด {count}")
-        else:
-            strip = ""
-        if strip:
-            self.text.draw(img, strip, C, 176, 24, ui.INK_SOFT, align="centre")
+        # THREE FIGURES IN A ROW at the top of the panel, with the subtraction done: what
+        # was asked for, what has been counted, and what is still missing. The word -- ขาด
+        # or เกิน -- is the heading of the third column, so the answer is still in words
+        # and not only in a colour. The PC draws the same row.
+        side = (R - L) // 6                 # the middle of each outer third
+        title, gap, gap_colour = self._gap(total)
+        want = str(self.target) if self.target else "—"
+        for x, head, figure, ink in ((L + side, "ยอดที่ต้องการ", want, ui.INK),
+                                     (C, "ยอดสะสม", "", None),
+                                     (R - side, title, gap, gap_colour)):
+            self.text.draw(img, head, x, 112, 26, ui.INK_SOFT, align="centre")
+            if figure:
+                self.text.draw(img, figure, x, 150, 56, ink, align="centre")
 
         # NO REGION, NO NUMBER. Not a zero and not the count of the whole picture -- a
         # figure on this screen is a claim about a tray, and until somebody has said which
         # part of the bench is the tray there is nothing to make that claim about. A dash
         # is the only honest thing to put here, and it is what the records list already
         # shows for a value that was never set.
-        self.text.draw(img, "—" if self.roi is None else str(total), C, 204, 134,
+        # AS BIG AS THE PANEL ALLOWS: 160 is the widest three digits fit between the side
+        # columns, and the line is set so its baseline sits just above "เม็ด".
+        self.text.draw(img, "—" if self.roi is None else str(total), C, 186, 160,
                        colour, align="centre")
 
-        if self.target and self.roi is not None:
-            ui.progress(img, (L + 8, 424, 692, 16), total / max(1, self.target), colour)
         self._camera(img, frame, boxes, getattr(self, "cam_box", (28, 104, W - 856, 896)),
                      stale, ms, quick)
 
@@ -1425,14 +1394,15 @@ class Screen:
             self._over.append(("circle", (cx, cy, 11), ui.MARK_RIM, -1))
             self._over.append(("circle", (cx, cy, 7), ui.MARK, -1))
 
-        if self.arming:
-            # RINGS, NOT FILLED DOTS. A corner of a full tray has a pill under it, and a
-            # solid mark would hide the very thing the corner is being placed around.
-            corners = [spot(cx, cy) for cx, cy in self.pending]
-            if len(corners) > 1:
-                self._over.append(("path", corners, ui.ROI_BAND, 5))
-            for cx, cy in corners:
-                self._over.append(("ring", (cx, cy, 20), ui.ROI_BAND, 5))
+        if self.roi and self.setup:
+            # THE HANDLES, in the camera settings: a ring on each corner, which is what a
+            # finger drags. RINGS, NOT FILLED DOTS -- a corner of a full tray has a pill
+            # under it, and a solid mark would hide what the corner is being placed around.
+            corners = [spot(cx, cy) for cx, cy in self.roi]
+            self._over.append(("poly", corners, ui.ROI_BAND, 4))
+            for i, (cx, cy) in enumerate(corners):
+                self._over.append(("ring", (cx, cy, 34 if i == self.grab else 26),
+                                   ui.ROI_BAND, 6))
         elif self.roi:
             corners = [spot(cx, cy) for cx, cy in self.roi]
             self._over.append(("poly", corners, ui.ROI_LINE, 4))
@@ -1754,14 +1724,20 @@ class Screen:
         """
         if self.typing is None:
             return
-        w, h = 560, 700
+        # AS BIG AS THE SCREEN ALLOWS: the full height less a margin, and a width in
+        # proportion, with every size below taken from the height so the pad keeps its
+        # shape on any screen the bridge lays it out for.
+        h = H - 80
+        w = min(W - 80, int(h * 0.78))
         rect = ((W - w) // 2, (H - h) // 2, w, h)
-        ui.rounded(img, rect, 28, ui.SURFACE, -1)
-        ui.rounded(img, rect, 28, ui.LINE_STRONG, 2)
+        ui.rounded(img, rect, 32, ui.SURFACE, -1)
+        ui.rounded(img, rect, 32, ui.LINE_STRONG, 2)
         x, y = rect[0], rect[1]
+        u = h / 1000                        # one unit: sizes below are for a 1000px pad
+        pad = int(36 * u)
 
-        self.text.draw(img, "ใส่จำนวน", x + w // 2, y + 22, 28, ui.INK_SOFT,
-                       align="centre")
+        self.text.draw(img, "ใส่จำนวน", x + w // 2, y + int(26 * u), int(40 * u),
+                       ui.INK_SOFT, align="centre")
 
         # THE WAY OUT, and until now there was not one. "ตกลง" commits whatever is in the
         # box, so an operator who opened this pad by mistake could only leave by SETTING a
@@ -1772,29 +1748,39 @@ class Screen:
         # is no cross among them; two lines cost nothing, cannot be missing from the atlas,
         # and come out the same weight at any size. app/window.py draws its tick the same
         # way and for the same reason.
-        close = (x + w - 96, y + 16, 72, 72)
-        ui.rounded(img, close, 36, ui.BG, -1)
-        ui.rounded(img, close, 36, ui.LINE_STRONG, 2)
-        ccx, ccy, arm = close[0] + 36, close[1] + 36, 16
+        cs = int(88 * u)
+        close = (x + w - pad - cs, y + int(16 * u), cs, cs)
+        ui.rounded(img, close, cs // 2, ui.BG, -1)
+        ui.rounded(img, close, cs // 2, ui.LINE_STRONG, 2)
+        ccx, ccy, arm = close[0] + cs // 2, close[1] + cs // 2, int(20 * u)
         for lean in (-1, 1):
             cv2.line(img, (ccx - arm, ccy - arm * lean), (ccx + arm, ccy + arm * lean),
-                     ui.INK_SOFT, 5, cv2.LINE_AA)
+                     ui.INK_SOFT, 6, cv2.LINE_AA)
         self.hits.append(("key-close", close))
-        ui.card(img, (x + 32, y + 74, w - 64, 96), 18)
+
+        box_y, box_h = y + int(120 * u), int(140 * u)
+        ui.card(img, (x + pad, box_y, w - 2 * pad, box_h), 22)
         shown = self.typing or "0"
-        self.text.draw(img, shown, x + w // 2, y + 92, 48,
+        self.text.draw(img, shown, x + w // 2, box_y + int(18 * u), int(80 * u),
                        ui.INK if self.typing else ui.INK_MUTED, align="centre")
 
+        ok_h = int(130 * u)
+        ok_y = y + h - pad - ok_h
+        gap = int(12 * u)
+        keys_y = box_y + box_h + int(24 * u)
+        kw = (w - 2 * pad - 2 * gap) // 3
+        kh = (ok_y - gap - keys_y - 3 * gap) // 4
         keys = ("1", "2", "3", "4", "5", "6", "7", "8", "9", "ล้าง", "0", "ลบ")
-        kw, kh = (w - 80) // 3, 88
         for i, key in enumerate(keys):
             col, row = i % 3, i // 3
-            box = (x + 32 + col * (kw + 8), y + 196 + row * (kh + 8), kw, kh)
-            ui.button(img, self.text, box, key, 34 if key.isdigit() else 26, "ghost")
+            box = (x + pad + col * (kw + gap), keys_y + row * (kh + gap), kw, kh)
+            ui.button(img, self.text, box, key, int((60 if key.isdigit() else 40) * u),
+                      "ghost")
             self.hits.append((f"key-{key}", box))
 
         self.hits.append(("key-ok", ui.button(
-            img, self.text, (x + 32, y + h - 104, w - 64, 88), "ตกลง", 32, "primary")))
+            img, self.text, (x + pad, ok_y, w - 2 * pad, ok_h), "ตกลง", int(48 * u),
+            "primary")))
 
     def _list(self, img, box, rows):
         """The records, in columns with headings, as the bench's table has them."""
@@ -1909,6 +1895,12 @@ class Screen:
         """The total as of the last composed frame, for the parts that have no `count`."""
         return self.total(self._steady_n or 0)
 
+    def main_action(self) -> str:
+        """What the big button does now: "done" on the exact count, "keep" otherwise."""
+        if self.target and self.live_total() == self.target:
+            return "done"
+        return "keep"
+
     def _save_look(self) -> str:
         """"warn" when the save would file a SHORT count, "primary" when it would not.
 
@@ -1944,10 +1936,6 @@ class Screen:
             return self.blocked
         if self.setup:
             return "กำลังตั้งค่ากล้อง"
-        if self.arming:
-            # Mid-gesture the number is measured through a region that is about to be
-            # replaced. Banking it would put a figure nobody can reproduce into a bottle.
-            return "กำลังกำหนดกรอบนับ"
         if self.clearing:
             return "กวาดเม็ดในถาดออกให้หมด แล้วจึงเทรอบต่อไป"
         if not self._steady_n:
@@ -1968,15 +1956,14 @@ class Screen:
         if self.clearing and not count and self.steady():
             self.clearing = False
             if self.note == CLEAR_NOTE:
-                self.say("ถาดว่างแล้ว เทรอบต่อไปได้")
+                self.say("")
 
     def take_round(self, frame):
-        """Freeze what is on the tray into the total, and refuse the tray until it is empty.
+        """Freeze what is on the tray into the total, and keep counting what the camera sees.
 
-        The guard is not the greyed button repeated for neatness. A disabled button is a
-        drawing; the rule that a pour counts only when the figure has settled, the picture
-        is alive and the tray has been seen empty since the last pour is what stops the
-        same tablets being counted twice, and it belongs where the addition happens.
+        NO WAIT FOR AN EMPTY TRAY, at the operator's request: the total is what was kept
+        plus what is on the tray now, from the next frame. Sweeping the kept tablets off
+        is the operator's job -- left on the tray they are counted again.
         """
         why = self.round_block()
         if why:
@@ -1984,11 +1971,10 @@ class Screen:
             return False
         self.rounds.append(int(self._steady_n))
         self.round_frames.append(None if frame is None else frame.copy())
-        self.clearing = True
         self._steady_n = None               # the stillness timer restarts on the new state
         self.toast = (f"เก็บรอบที่ {len(self.rounds)} {self.rounds[-1]} เม็ด",
                       f"สะสมแล้ว {self.banked()} เม็ด", time.time())
-        self.say(CLEAR_NOTE)
+        self.say("")                        # no sweep warning, at the operator's request
         return True
 
     def reset_rounds(self):
@@ -2006,15 +1992,36 @@ class Screen:
         being discarded cannot be recovered by looking at anything, so arming the button
         and saying on it what the next tap costs turns an accident into two in a row.
         """
-        if not (self.rounds or self.clearing):
+        if not self.rounds:
             return False
         if time.time() - self.reset_armed_at < CONFIRM_SECONDS:
             banked = self.banked()
+            # What was kept goes; what is on the tray now is counted as a first pour.
             self.clear_rounds()
             self.say(f"เริ่มนับใหม่ ทิ้งยอดสะสม {banked} เม็ดแล้ว")
             return True
         self.reset_armed_at = time.time()
         self.say(f"จะทิ้งยอดสะสม {self.banked()} เม็ด กดอีกครั้งเพื่อเริ่มนับใหม่")
+        return True
+
+    def zero_all(self) -> bool:
+        """Everything back to zero: the number asked for and every banked pour.
+
+        Twice when there are pours banked, for the reason นับใหม่ is: they cannot be got
+        back. Once when there is only the number, which can simply be set again.
+        """
+        if not (self.target or self.rounds or self.clearing):
+            return False
+        armed = time.time() - self.zero_armed_at < CONFIRM_SECONDS
+        if (self.rounds or self.clearing) and not armed:
+            self.zero_armed_at = time.time()
+            self.say(f"จะทิ้งยอดสะสม {self.banked()} เม็ด และจำนวนที่ต้องการ "
+                     f"กดอีกครั้งเพื่อรีเซ็ต")
+            return True
+        self.clear_rounds()
+        self.target = 0
+        self.asking = None
+        self.say("รีเซ็ตแล้ว")
         return True
 
     def clear_rounds(self):
@@ -2025,8 +2032,20 @@ class Screen:
         self._steady_n = None
         self.save_armed_at = 0.0
         self.reset_armed_at = 0.0
+        self.zero_armed_at = 0.0
 
     # ------------------------------------------------------------------- the verdict --
+    def _gap(self, total):
+        """The third column of the top row: (heading, figure, colour)."""
+        if self.roi is None or not self.target:
+            return "ยอดที่ขาด", "—", ui.INK_MUTED
+        diff = total - self.target
+        if diff == 0:
+            return "ยอดที่ขาด", "0", ui.GREEN_700
+        if diff > 0:
+            return "ยอดที่เกิน", str(diff), ui.WARN
+        return "ยอดที่ขาด", str(-diff), ui.DANGER
+
     def _verdict(self, count):
         # THE REGION COMES FIRST, before the target and before the count. Without one
         # there is no tray, so there is nothing for the other two to be right or wrong
@@ -2107,6 +2126,8 @@ class Screen:
         # coordinate eventually lands.
         x = int(x * W / OUT_W)
         y = int(y * H / OUT_H)
+        if phase == "long" and self.grab is not None:
+            return False                    # a corner held still is still being held
         if phase == "down":
             return self._down(x, y, frame_shape)
         if phase == "move":
@@ -2127,12 +2148,31 @@ class Screen:
             self.set_zoom(self._zoom_at(x))
             self._chrome_key = None
             return True
+        # A CORNER OF THE REGION is picked up on down too, for the knob's reason, and only
+        # in the camera settings with nothing open over the picture.
+        self.grab = None
+        if (self.page == "count" and self.setup and self.roi and self.typing is None
+                and not self.picking and self.asking is None and ui.hit(PANE, x, y)):
+            self.grab = self._near_corner(x, y, frame_shape)
+            if self.grab is not None:
+                self._grab_was = list(self.roi)
+                return True
         return False
 
     def _move(self, x, y, frame_shape):
         if self._zoom_drag:
             self.set_zoom(self._zoom_at(x))
             self._chrome_key = None
+            return True
+        if self.grab is not None:
+            point = self._to_frame(x, y, frame_shape)
+            if point is None or not self.roi:
+                return False
+            fh, fw = frame_shape[:2]
+            roi = list(self.roi)
+            roi[self.grab] = (int(min(max(point[0], 0), fw - 1)),
+                              int(min(max(point[1], 0), fh - 1)))
+            self.roi = roi
             return True
         if self._on_list(self._touch_start):
             self.scroll = int(self._scroll_start + (self._touch_start[1] - y))
@@ -2153,55 +2193,53 @@ class Screen:
             self.set_zoom(self._zoom_at(x))
             self._chrome_key = None
             return True
+        if self.grab is not None:
+            return self._drop(frame_shape)
         if (start and self._on_list(start) and abs(start[1] - y) > TAP_SLOP):
             return False
-        # A CORNER GOES DOWN ONLY IF THE FINGER STAYED PUT, which is the affordance every
-        # button already has: start the touch, think better of it, slide off before letting
-        # go. What is being placed decides which pills are counted, so it deserves the way
-        # out at least as much as a button does.
-        #
-        # AND ONLY ON THE PICTURE, never over a control. The corner has to be placed on the
-        # tray, so a tap anywhere else is a tap on what it landed on -- including the very
-        # button that armed this mode, which sits a thumb's width from the picture and
-        # whose whole job right now is to say "ยกเลิก". `hits` carries ("view", PANE) as
-        # its last entry, so "did this land on a control" has to exclude the picture
-        # itself; without that, every corner was read as a tap on the video and thrown away.
-        on_control = any(ui.hit(rect, x, y) for name, rect in self.hits if name != "view")
-        # ...and not through an open pad. The video is behind the overlay, so a tap that
-        # misses the pad's buttons would otherwise drop a corner of the counting region
-        # onto a tray the operator cannot even see.
-        if (self.arming and self.page == "count" and start and not on_control
-                and self.typing is None and not self.picking and self.asking is None
-                and ui.hit(PANE, x, y)
-                and abs(start[0] - x) <= TAP_SLOP and abs(start[1] - y) <= TAP_SLOP):
-            return self._corner(x, y, frame_shape)
         return self._press(x, y, on_save, on_export)
 
-    def _corner(self, x, y, frame_shape):
-        """One corner placed. The fourth closes the shape and sets the region."""
-        point = self._to_frame(x, y, frame_shape)
-        if point is None:
-            return False
-        self._chrome_key = None             # the row's second button counts the corners
-        self.pending.append((point[0], point[1]))
-        if len(self.pending) < ROI_POINTS:
-            self._roi_prompt()
+    def _to_canvas(self, fx, fy, frame_shape):
+        """Frame point -> canvas point: _to_frame run backwards, mirror and all."""
+        px, py, pw, ph = PANE
+        fh, fw = frame_shape[:2]
+        k, ox, oy = fill_center(fw, fh, (px, py, pw, ph))
+        if self.flip != self.rotate:
+            fx = fw - fx
+        if self.rotate:
+            fy = fh - fy
+        return ox + fx * k, oy + fy * k
+
+    def _near_corner(self, x, y, frame_shape):
+        """The corner of the region within GRAB of this canvas point, the nearest, or None."""
+        if frame_shape is None or not self.roi:
+            return None
+        best, best_d = None, GRAB * GRAB
+        for i, (fx, fy) in enumerate(self.roi):
+            cx, cy = self._to_canvas(fx, fy, frame_shape)
+            d = (cx - x) ** 2 + (cy - y) ** 2
+            if d <= best_d:
+                best, best_d = i, d
+        return best
+
+    def _drop(self, frame_shape):
+        """The corner let go: the shape tidied by quad(), or put back if it is unusable.
+
+        NOT WRITTEN YET: the region goes to disk with the zoom, on the settings' บันทึก.
+        """
+        was, self._grab_was, self.grab = self._grab_was, None, None
+        if was is None or not self.roi:
             return True
         size = (frame_shape[1], frame_shape[0]) if frame_shape else (0, 0)
-        pts = quad(self.pending, size)
+        pts = quad(self.roi, size)
         if pts is None:
-            # The four corners enclose nothing worth counting -- tapped on one spot, or
-            # strung out in a line. Only the LAST one is dropped: three good corners and a
-            # slip is the likely case, and throwing all four away would charge the operator
-            # four times for one slip.
-            self.pending.pop()
-            self.say("มุมนี้แคบเกินไป แตะให้ห่างจากมุมอื่น")
-            return True
-        self.roi = pts
-        self.arming = False
-        self.pending = []
-        # NOT WRITTEN YET: the region goes to disk with the zoom, on the settings' บันทึก.
-        self.say("กำหนดกรอบแล้ว กดบันทึกเพื่อใช้กรอบนี้")
+            # Folded flat or squeezed thin. Only this drag is undone; the corners already
+            # placed stay where they were put.
+            self.roi = was
+            self.say("มุมนี้แคบเกินไป ลากให้ห่างจากมุมอื่น")
+        else:
+            self.roi = pts
+            self.say("ลากมุมกรอบให้ตรงมุมถาด แล้วกดบันทึก")
         return True
 
     def _quit(self):
@@ -2239,23 +2277,10 @@ class Screen:
 
         A CAMERA SETTING, like the half turn beside it: shown at once, written by the
         settings' บันทึก and put back by their ยกเลิก -- see setup_save and setup_cancel.
-        Corners already tapped stay; they are in frame pixels too.
+        The region stays; it is in frame pixels too.
         """
         self.flip = not self.flip
         self.say("พลิกภาพซ้าย-ขวาแล้ว" if self.flip else "เลิกพลิกภาพแล้ว")
-
-    def _corner_undo(self):
-        """The row's second button while corners are going down: the last one back."""
-        if self.pending:
-            self.pending.pop()
-            self._roi_prompt()
-            return
-        self.arming = False
-        self.say("")
-
-    def _roi_prompt(self):
-        left = ROI_POINTS - len(self.pending)
-        self.say(f"แตะมุมถาดทีละมุม อีก {left} จุด")
 
     #: The controls that belong to an overlay rather than to the screen behind it.
     OVERLAY_KEYS = ("key-", "day", "month", "pick-", "ask-")
@@ -2286,7 +2311,7 @@ class Screen:
 
     #: The controls that take two presses, and where each remembers the first one.
     GUARDS = {"quit": "quit_armed_at", "reset": "reset_armed_at",
-              "save": "save_armed_at", "wipe": "confirm_at"}
+              "zero": "zero_armed_at", "save": "save_armed_at", "wipe": "confirm_at"}
 
     def _act(self, name, on_save, on_export):
         self._chrome_key = None             # whatever it changes, the furniture is redrawn
@@ -2312,7 +2337,8 @@ class Screen:
             self.typing = None
             self.picking = ""
         if name == "target-":
-            self._want_target(0)            # "เคลียร์": back to no prescription at all
+            # "เคลียร์": the number only, never the pours, so nothing to ask about.
+            self.target, self.asking = 0, None
         elif name == "target+":
             self.typing = ""                # "ป้อนจำนวน": the pad, same as the box
         elif name.startswith("preset"):
@@ -2345,8 +2371,8 @@ class Screen:
             self.setup_open()
         elif name == "rotate":
             # Shown at once, written by the settings' บันทึก like the zoom beside it. The
-            # region and any corners already tapped stay: they are in frame pixels, and the
-            # turn only changes how the frame is drawn.
+            # region stays: it is in frame pixels, and the turn only changes how the frame
+            # is drawn.
             self.rotate = not self.rotate
             self.say("หมุนภาพ 180° แล้ว" if self.rotate else "เลิกหมุนภาพแล้ว")
         elif name == "flip":
@@ -2358,13 +2384,12 @@ class Screen:
         elif name == "roi":
             # Only inside the camera settings: from anywhere else it opens them first, so
             # a region can never be changed without the บันทึก that writes it.
+            # A NEW REGION IS THE DEFAULT RECTANGLE, its corners then dragged onto the tray.
             self.setup_open()
-            self.arming = not self.arming
-            self.pending = []
-            if self.arming:
-                self._roi_prompt()
-            else:
-                self.say("")
+            if self._last_frame is not None:
+                fh, fw = self._last_frame.shape[:2]
+                self.roi = default_quad((fw, fh))
+                self.say("ลากมุมกรอบให้ตรงมุมถาด แล้วกดบันทึก")
         elif name.startswith("row"):
             self.sel = int(name[3:])
         elif name == "refresh":
@@ -2375,17 +2400,28 @@ class Screen:
             self.take_round(self._last_frame)
         elif name == "reset":
             self.reset_rounds()
+        elif name == "zero":
+            self.zero_all()
+        elif name == "save" and self.main_action() == "keep":
+            if self.setup:
+                self.say("กำลังตั้งค่ากล้อง กดบันทึกหรือยกเลิกก่อน")
+            elif not self.target:
+                self.say("ยังไม่กำหนดจำนวน")
+            elif self.live_total() > self.target:
+                self.say(self.blocked or "เกินจำนวนที่ต้องการ นำออกก่อนจึงบันทึกได้")
+            else:
+                self.take_round(self._last_frame)
         elif name == "save":
             if self.setup:
                 self.say("กำลังตั้งค่ากล้อง กดบันทึกหรือยกเลิกก่อน")
-            elif self.arming:
-                self._roi_prompt()          # say what is still needed, not a refusal
             elif self.blocked:
                 self.say(self.blocked)
             elif not self.target:
                 # The badge above has been saying ยังไม่กำหนดจำนวน the whole time; this is
                 # the same fact, said where the press happened.
                 self.say("ยังไม่กำหนดจำนวน กำหนดจำนวนก่อนจึงบันทึกได้")
+            elif not self.steady():
+                self.say("ตัวเลขยังไม่นิ่ง รอสักครู่")
             elif self.live_total() <= 0:
                 # A DEAD BUTTON STILL REPORTS ITS TAP. ui.button draws it dead; the hit is
                 # registered either way, which is what lets every other refusal on this

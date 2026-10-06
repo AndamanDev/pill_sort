@@ -347,53 +347,50 @@ def main():
     app._S["last_key"] = None
     app.frame(rgba, fw, fh, stride, 0, 0, 0, 0, 0)
 
-    # THE COUNTING FRAME OUTLIVES THE APP. Tapped in through the screen's own touch path,
-    # then read back by a second Screen on the same folder -- which is what the next
-    # launch is, and what the phone had no answer for: every launch started with no
-    # region and a count of the whole picture, on a bench whose tray has not moved.
+    # THE COUNTING FRAME OUTLIVES THE APP. Set through the screen's own touch path -- the
+    # default rectangle, then one corner dragged -- and read back by a second Screen on
+    # the same folder, which is what the next launch is. Every launch used to start with
+    # no region and a count of the whole picture, on a bench whose tray has not moved.
     #
-    # FOUR CORNERS, AND THE LAST TWO GO IN THE WRONG ORDER ON PURPOSE. Tapped in that
-    # order they would make a bow tie, and quad() is what turns any four taps into a shape
-    # with no crossing edges; a test that only ever tapped them round the rim would never
-    # execute the line that matters.
+    # THE CORNER IS DRAGGED PAST ITS NEIGHBOUR ON PURPOSE. Left in their old order the four
+    # would make a bow tie, and quad() on the drop is what turns them back into a shape
+    # with no crossing edges; a test that only nudged a corner would never execute the
+    # line that matters.
     from model3.phone.screen import pane_out, Screen as Fresh
 
+    shape = (480, 640, 3)
     screen.page = "count"
-    screen.setup_open()                 # the region is set in the camera settings
-    screen.arming = True
-    screen.pending = []
+    screen._last_frame = np.zeros(shape, np.uint8)
+    screen._act("roi", None, None)      # opens the settings with the default rectangle
     # pane_out(), not PANE. Android sends touches in the coordinates of the bitmap it was
     # given, which is the SCALED screen; PANE is the design-size rectangle, half as big
-    # again. The earlier version of this test passed design coordinates and still got a
-    # region, because the drag it was testing clamped whatever it was handed back into the
-    # frame -- so the test passed while aiming a third of the way off the tray.
+    # again.
     fx, fy, fw_, fh_ = pane_out()
-    corners = [(fx + 100, fy + 90), (fx + fw_ - 120, fy + fh_ - 110),
-               (fx + fw_ - 120, fy + 90), (fx + 100, fy + fh_ - 110)]
-    for tx, ty in corners:
-        screen.touch("down", tx, ty, (480, 640, 3))
-        screen.touch("up", tx, ty, (480, 640, 3))
-    screen.setup_save((480, 640, 3))    # and written by its บันทึก, not by the fourth corner
+    cx, cy = screen._to_canvas(*screen.roi[0], shape)
+    sx, sy = int(cx * OUT_W / DW), int(cy * OUT_H / DH)
+    screen.touch("down", sx, sy, shape)
+    screen.touch("move", fx + fw_ - 20, fy + 20, shape)
+    screen.touch("up", fx + fw_ - 20, fy + 20, shape)
+    screen.setup_save(shape)            # written by the settings' บันทึก, not by the drop
     kept = Fresh(ASSETS, records)
     kept.compose(cv2.resize(frames[0], (640, 480)), np.zeros((0, 4), np.float32), 0, 0.0)
-    print(f"  กรอบนับ: แตะ 4 มุมแล้วได้ {screen.roi is not None}   "
+    print(f"  กรอบนับ: ลากมุมแล้วได้ {screen.roi is not None}   "
           f"{screen.roi}   เปิดใหม่ยังอยู่ {kept.roi == screen.roi}")
-    assert screen.roi, "แตะครบสี่มุมแล้วไม่ได้กรอบ"
-    assert not screen.arming, "มุมที่สี่แล้วยังไม่ปิดกรอบ"
+    assert screen.roi, "ลากมุมแล้วไม่ได้กรอบ"
+    assert screen.grab is None, "ปล่อยนิ้วแล้วมุมยังค้างอยู่"
     assert len(screen.roi) == 4 and len(set(map(tuple, screen.roi))) == 4, "มุมซ้ำกัน"
     assert kept.roi == screen.roi, "เปิดโปรแกรมใหม่แล้วกรอบนับหาย"
-    # THE BOW TIE THE TAP ORDER WOULD OTHERWISE HAVE MADE. Four corners of a rectangle
-    # joined 1-2-3-4 in the order tapped above cross in the middle and enclose ZERO area;
-    # joined round the rim they enclose the whole rectangle. So the shoelace area of what
-    # was saved, against the area of its own bounding box, is the test -- and it is the
-    # difference between counting the tray and counting nothing.
+    # THE BOW TIE THE DRAG WOULD OTHERWISE HAVE MADE. Four corners can be joined in three
+    # ways; a crossed one's shoelace is the DIFFERENCE of its lobes, so the simple shape
+    # is the one with the most area. What was saved has to be that one.
+    def enclosed(ring):
+        return abs(sum(ring[i][0] * ring[(i + 1) % 4][1] - ring[(i + 1) % 4][0] * ring[i][1]
+                       for i in range(4))) / 2.0
     r = screen.roi
-    area = abs(sum(r[i][0] * r[(i + 1) % 4][1] - r[(i + 1) % 4][0] * r[i][1]
-                   for i in range(4))) / 2.0
-    box = ((max(q[0] for q in r) - min(q[0] for q in r))
-           * (max(q[1] for q in r) - min(q[1] for q in r)))
-    print(f"  กรอบนับ: พื้นที่ {area:.0f} จาก {box} (โบว์ไทจะได้ 0)")
-    assert area > 0.9 * box, "มุมเรียงไขว้กัน กรอบเป็นโบว์ไท"
+    area = enclosed(r)
+    best = max(enclosed([r[i] for i in o]) for o in ((0, 1, 2, 3), (0, 1, 3, 2), (0, 2, 1, 3)))
+    print(f"  กรอบนับ: พื้นที่ {area:.0f} (มากที่สุดที่เป็นได้ {best:.0f})")
+    assert area == best, "มุมเรียงไขว้กัน กรอบเป็นโบว์ไท"
 
     print(f"\nรันครบ {ok} เฟรม ไม่มี exception")
     print("records:", records)
