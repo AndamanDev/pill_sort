@@ -195,8 +195,8 @@ check("the settings have it", "rotate" in hits, True)
 
 def overlap(a, b):
     return a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
-others = [n for n in ("zoom-", "zoom+", "zoom-track", "roi", "setup-save", "setup-cancel")
-          if n in hits]
+others = [n for n in ("flip", "zoom-", "zoom+", "zoom-track", "roi", "setup-save",
+                     "setup-cancel") if n in hits]
 check("it overlaps nothing else in the panel",
       [n for n in others if overlap(hits["rotate"], hits[n])], [])
 check("every control is inside the card",
@@ -205,7 +205,8 @@ check("every control is inside the card",
 # Its words have pictures, or the APK draws a hollow box where they should be.
 words = sc.text.index["words"]
 check("its words are in the APK",
-      [w for w in ("ทิศทางภาพ", "หมุนภาพ", "เลิกหมุนภาพแล้ว") if w not in words], [])
+      [w for w in ("ทิศทาง", "หมุน", "หมุนภาพ", "เลิกหมุนภาพแล้ว", "พลิกซ้าย-ขวา")
+       if w not in words], [])
 check("and so is the degree sign", "°" in sc.text.index["digits"], True)
 
 OX, OY = screen_mod.OUT_W / screen_mod.W, screen_mod.OUT_H / screen_mod.H   # taps arrive scaled

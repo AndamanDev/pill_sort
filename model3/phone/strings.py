@@ -130,11 +130,14 @@ COUNTING = [
     "ยังไม่ได้กำหนดกรอบนับ",
     "พลิกภาพซ้าย-ขวาแล้ว",
     "เลิกพลิกภาพแล้ว",
-    # The half turn in the camera settings, for a camera on the far side of the tray. The
-    # "180°" after หมุนภาพ is composed from DIGITS, which is why the degree sign is there.
-    "ทิศทางภาพ",
+    # Which way round the picture is shown, in the camera settings: a half turn for a
+    # camera on the far side of the tray, a flip for one that hands over a mirror image.
+    # The "180°" is composed from DIGITS, which is why the degree sign is there.
+    "ทิศทาง",
+    "หมุน",
     "หมุนภาพ",
     "เลิกหมุนภาพแล้ว",
+    "พลิกซ้าย-ขวา",
     "มุมนี้แคบเกินไป",
     "แตะให้ห่างจากมุมอื่น",
     "โมเดลผิดพลาด",

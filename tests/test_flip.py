@@ -131,8 +131,28 @@ print("--- replacing the region does NOT undo the flip")
 flip_now = win.flip
 win._roi_clicked()
 check("armed for a new one", win.arming, True)
-check("flip kept", W.load_flip(0), flip_now)
+check("flip kept", win.flip, flip_now)
 win._setup_cancel()
+check("and still kept after ยกเลิก", win.flip, flip_now)
+
+print("--- a camera setting: shown at once, written by บันทึก, put back by ยกเลิก")
+win._setup_open()
+was = win.flip
+on_disk = W.load_flip(0)
+win._flip_clicked()
+check("shown at once", win.view.flip, not was)
+check("the button says so", win.flip_btn.isChecked(), not was)
+check("not written while the settings are open", W.load_flip(0), on_disk)
+win._setup_cancel()
+check("ยกเลิก puts it back", (win.flip, win.view.flip, win.flip_btn.isChecked()),
+      (was, was, was))
+check("and nothing was written", W.load_flip(0), on_disk)
+win._setup_open()
+win._flip_clicked()
+win._setup_save()
+check("บันทึก writes it", W.load_flip(0), not was)
+check("the button is in the camera settings, beside the turn",
+      win.flip_btn.parent() is win.rotate_btn.parent(), True)
 
 # ------------------------------------------------------------------------------- phone
 print("--- the phone does it the same way, in its own coordinates")
@@ -154,13 +174,21 @@ check("the screen picks it up", sc.flip, False)
 sc.compose(FRAME, np.zeros((0, 4), np.float32), 0, 0.0)
 sc.roi = [(100, 80), (100, 400), (500, 400), (500, 80)]
 roi_before = list(sc.roi)
-# THE BUTTON HAS GONE FROM THE PHONE, the mechanism has not: the bench still has its own
-# and the pane's mapping still has to undo a mirror correctly if one is ever set. Called
-# directly, because there is no longer a control that calls it here.
-check("no flip button on the phone any more", "flip" in dict(sc.hits), False)
-sc._flip()
+# The button is in the camera settings, beside the half turn -- not on the counting screen.
+check("no flip button on the counting screen", "flip" in dict(sc.hits), False)
+sc._act("setup", None, None)
+sc.compose(FRAME, np.zeros((0, 4), np.float32), 0, 0.0)
+check("it is in the camera settings", "flip" in dict(sc.hits), True)
+sc._act("flip", None, None)
 check("flip on", sc.flip, True)
-check("written", rec_store.load_flip(PH), True)
+check("not written yet", rec_store.load_flip(PH), False)
+check("the region did not move", sc.roi, roi_before)
+sc._act("setup-cancel", None, None)
+check("ยกเลิก puts it back", sc.flip, False)
+sc._act("setup", None, None)
+sc._act("flip", None, None)
+sc._act("setup-save", None, None)
+check("บันทึก writes it", rec_store.load_flip(PH), True)
 check("the region did not move", sc.roi, roi_before)
 
 print("--- the mark and the tap use one mirror, so they meet on the tablet")

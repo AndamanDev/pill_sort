@@ -429,7 +429,7 @@ class Screen:
         #: swaps the counting panel for one that holds both, and NOTHING IS WRITTEN UNTIL
         #: ITS บันทึก; ยกเลิก puts the zoom and the region back as they were.
         self.setup = False
-        self._setup_was = None              # (zoom, region, half turn) when it opened
+        self._setup_was = None              # (zoom, region, turn, flip) when it opened
         #: The last frame composed, so the round button has a picture to bank. The touch
         #: handler is given one by the bridge for the region maths, but a tap that lands
         #: between two camera frames would have nothing; this always has the last one.
@@ -1171,11 +1171,14 @@ class Screen:
         self.text.draw(img, "ปรับซูมก่อน แล้วจึงกำหนดกรอบนับ", L, 206, 24, ui.INK_MUTED)
         cv2.line(img, (L, 262), (L + 708, 262), ui.LINE, 2)
 
-        # The half turn first and on its heading's row, as on the bench: see _setup_card.
-        self.text.draw(img, "1  ทิศทางภาพ", L, 300, 28, ui.INK_SOFT)
+        # Which way round, first and on its heading's row, as on the bench: see _setup_card.
+        self.text.draw(img, "1  ทิศทาง", L, 300, 28, ui.INK_SOFT)
         self.hits.append(("rotate", ui.button(
-            img, self.text, (L + 408, 284, 300, 76), "หมุนภาพ 180°", 28, "chip",
+            img, self.text, (L + 216, 284, 220, 76), "หมุน 180°", 28, "chip",
             enabled="on" if self.rotate else True)))
+        self.hits.append(("flip", ui.button(
+            img, self.text, (L + 452, 284, 256, 76), "พลิกซ้าย-ขวา", 28, "chip",
+            enabled="on" if self.flip else True)))
         cv2.line(img, (L, 384), (L + 708, 384), ui.LINE, 2)
 
         self.text.draw(img, "2  ระยะซูมภาพ", L, 410, 28, ui.INK_SOFT)
@@ -1259,7 +1262,8 @@ class Screen:
         if self.setup:
             return
         self.setup = True
-        self._setup_was = (self.zoom, list(self.roi) if self.roi else None, self.rotate)
+        self._setup_was = (self.zoom, list(self.roi) if self.roi else None, self.rotate,
+                           self.flip)
         self.arming = False
         self.pending = []
         self.say("ปรับซูมก่อน แล้วจึงกำหนดกรอบนับ")
@@ -1280,6 +1284,7 @@ class Screen:
         size = (shape[1], shape[0]) if shape else (0, 0)
         rec_store.save_zoom(self.records_dir, self.zoom)
         rec_store.save_rotate(self.records_dir, self.rotate)
+        rec_store.save_flip(self.records_dir, self.flip)
         rec_store.save_roi(self.records_dir, size, self.roi)
         self._setup_close()
         self.say("บันทึกการตั้งค่ากล้องแล้ว")
@@ -1293,8 +1298,9 @@ class Screen:
         """
         if not self.setup:
             return
-        zoom, roi, rotate = self._setup_was or (self.zoom, self.roi, self.rotate)
-        self.zoom, self.roi, self.rotate = zoom, roi, rotate
+        zoom, roi, rotate, flip = self._setup_was or (self.zoom, self.roi, self.rotate,
+                                                      self.flip)
+        self.zoom, self.roi, self.rotate, self.flip = zoom, roi, rotate, flip
         self._setup_close()
         self.say("ยกเลิกแล้ว ใช้การตั้งค่ากล้องเดิม")
 
@@ -2230,11 +2236,12 @@ class Screen:
         Now the frame is never touched. Only the pane's drawing and the tap that comes back
         through it know, so the region, the model, the marks and the saved JPEG all go on
         living in the camera's own coordinates.
+
+        A CAMERA SETTING, like the half turn beside it: shown at once, written by the
+        settings' บันทึก and put back by their ยกเลิก -- see setup_save and setup_cancel.
+        Corners already tapped stay; they are in frame pixels too.
         """
         self.flip = not self.flip
-        rec_store.save_flip(self.records_dir, self.flip)
-        self.arming = False
-        self.pending = []
         self.say("พลิกภาพซ้าย-ขวาแล้ว" if self.flip else "เลิกพลิกภาพแล้ว")
 
     def _corner_undo(self):
@@ -2342,6 +2349,8 @@ class Screen:
             # turn only changes how the frame is drawn.
             self.rotate = not self.rotate
             self.say("หมุนภาพ 180° แล้ว" if self.rotate else "เลิกหมุนภาพแล้ว")
+        elif name == "flip":
+            self._flip()
         elif name == "setup-save":
             self.setup_save()
         elif name == "setup-cancel":
